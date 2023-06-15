@@ -1,0 +1,168 @@
+---
+title: "Source Track"
+author: "Zhu Ying"
+date: "2023-06-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R packages
+```{r}
+rm(list=ls()) 
+options(warn = -1)
+library(tidyr)
+library(dplyr)
+library(reshape2)
+library(ggplot2)
+library(ggsci)
+```
+
+
+
+
+## Input files
+```{r}
+design = read.table("metadata.txt", header=T, row.names= 1, sep="\t") 
+
+#group by skin, feather, oral, cloaca
+design$group <- design$tissue
+design$group[design$tissue%in%c("F", "G", "H", "I", "K", "L", "M")] <- "skin"
+design$group[design$tissue%in%c("D", "E", "FY", "N")] <- "feather"
+design$group[design$tissue=="B"] <- "oral"
+design$group[design$tissue=="C"] <- "cloaca"
+
+
+design$sampleID <- rownames(design)
+
+
+design$Env <- design$group
+
+design$SourceSink <-  design$group
+
+design$SourceSink[design$SourceSink%in%c("Qi", "Chi", "Ni", "Di", "Loach")] <- "source"
+design$SourceSink[design$SourceSink!="source"] <- "sink"
+
+design$Details <- "crested_ibis_microbiome"
+
+metadata<- design[,c("pedigreeID","tissue_explanation", "Env", 
+                     "SourceSink", "room_number", "Details")]
+
+colnames(metadata) <- c("SampleID","Description", "Env", 
+                        "SourceSink", "Study", "Details")
+
+otu_table <-read.delim("otutab_rare.txt", row.names= 1,  header=T, sep="\t")
+otus = t(as.matrix(otu_table))
+
+
+common.sample.ids = intersect(rownames(metadata), rownames(otus))  
+otus = otus[common.sample.ids,]
+metadata = metadata[common.sample.ids,]  
+
+if(length(common.sample.ids) <= 1) {
+  message = paste(sprintf('Error: there are %d sample ids in common '),
+                  'between the metadata file and data table')
+  stop(message)
+}
+train.ix = which(metadata$SourceSink=='source')  
+test.ix = which(metadata$SourceSink=='sink')   
+envs = metadata$Env   
+if(is.element('Description',colnames(metadata)))desc = metadata$Description   
+
+```
+
+## Source track
+
+```{r}
+source('SourceTracker.r') 
+##  alpha value
+# tune.results = tune.st(otus[train.ix,], envs[train.ix])
+
+# alpha1 = tune.results$best.alpha1
+# alpha2 = tune.results$best.alpha2
+#it will take about 2h30', you could use the following values instead.
+
+
+##  use the following values 
+alpha1 = alpha2 = 0.001
+
+
+# it will take several hours, you could load the Rdata instead.
+##  sourcetracker using traing data
+# st = sourcetracker(otus[train.ix,], envs[train.ix])
+##  sourcetracker using test data
+# results = predict(st,otus[test.ix,], alpha1=alpha1, alpha2=alpha2)
+
+
+load(file = "source_tracker_proportion.Rdata")
+
+
+```
+
+
+
+## Plot
+```{r}
+proportions <- results$proportions
+
+metadata_sub <- metadata[rownames(metadata)%in%rownames(results$proportions),]
+
+proportions <- proportions[rownames(metadata_sub),]
+proportions <- as.data.frame(proportions)
+
+proportions <- cbind(proportions, group=metadata_sub$Env)
+
+proportions.long <- pivot_longer(proportions, cols=-group)
+proportions.long <- as.data.frame(proportions.long)
+colnames(proportions.long) <- c("group", "source", "proportion")
+
+
+mat_t2 <- proportions 
+
+mat_mean <-  aggregate(mat_t2[,], by=mat_t2[7], FUN=mean) # mean by group
+mat_mean <- mat_mean[,-ncol(mat_mean)]
+mat_mean_final <-  do.call(rbind, mat_mean)[-1,]
+
+geno <-  mat_mean$group
+colnames(mat_mean_final) <-  geno
+
+mat_mean_final <-  as.data.frame(mat_mean_final)
+
+mat_mean_final$source <-  rownames(mat_mean_final)
+mat_mean_final
+
+data_all <-  as.data.frame(melt(mat_mean_final, id.vars=c("source")))
+data_all$variable <- factor(data_all$variable,level=c("cloaca", "oral", "feather", "skin"))
+
+
+main_theme <-  theme(panel.background=element_blank(),
+                     panel.grid=element_blank(),
+                     axis.line.x=element_line(size=.5, colour="black"),
+                     axis.line.y=element_line(size=.5, colour="black"),
+                     axis.ticks=element_line(color="black"),
+                     axis.text=element_text(color="black", size=7),
+                     legend.position="right",
+                     legend.background=element_blank(),
+                     legend.key=element_blank(),
+                     legend.text= element_text(size=7),
+                     text=element_text(family="sans", size=7))
+
+data_all$source[data_all$source=="Chi"] <- "Pond"
+data_all$source[data_all$source=="Di"] <- "Ground"
+data_all$source[data_all$source=="Loach"] <- "Food"
+data_all$source[data_all$source=="Ni"] <- "Muddy ground"
+data_all$source[data_all$source=="Qi"] <- "Habitat bar"
+
+p <-  ggplot(data_all, aes(x=variable, y = as.numeric(value), fill = source )) + 
+  geom_bar(stat = "identity",position="fill", width=0.7)+ 
+  scale_y_continuous(labels = scales::percent) + 
+  scale_fill_manual(values = c( "#E69F00","#008B8B","#66CC99", "#EEE8AA","blue" ,"#F0F0E6" ))+
+  xlab("")+ylab("Percentage (%)")+
+  main_theme
+
+p
+
+```
+

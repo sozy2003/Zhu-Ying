@@ -1,0 +1,179 @@
+---
+title: "bray-curtis pcoa of body-wide microbiome in crested ibis"
+author: "Zhu Ying"
+date: "2023-06-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load R packages
+
+```{r,echo=FALSE }
+# load related packages
+library("ggplot2") 
+library("vegan")
+```
+
+
+## Input files
+```{r}
+# Design of experiment
+design = read.table("metadata.txt", header=T, row.names= 1, sep="\t") 
+
+#group by skin, feather, oral, cloaca
+design$group <- design$tissue
+design$group[design$tissue%in%c("F", "G", "H", "I", "K", "L", "M")] <- "skin"
+design$group[design$tissue%in%c("D", "E", "FY", "N")] <- "feather"
+design$group[design$tissue=="B"] <- "oral"
+design$group[design$tissue=="C"] <- "cloaca"
+
+#subset
+design <- design[design$tissue_type!="environement",]
+ 
+
+# bray-curtis distance
+bray_curtis = read.table("bray_curtis.txt", sep="\t", header=T, check.names=F)
+
+rownames(bray_curtis)=bray_curtis$bray_curtis
+bray_curtis=bray_curtis[,-1]
+
+#reorder distance matrix
+bray_curtis = bray_curtis[rownames(design), ] 
+bray_curtis = bray_curtis[,rownames(design)] 
+
+
+#  Classical multidimensional scaling (MDS) of a data matrix. Also known as principal coordinates analysis
+pcoa = cmdscale(bray_curtis, k=4, eig=T)  
+points = as.data.frame(pcoa$points) # get coordinate string, format to dataframme
+colnames(points) = c("x", "y", "z","a") 
+eig = pcoa$eig
+
+
+points = cbind(points, design[match(rownames(points), rownames(design)), ])
+
+points$group <- factor(points$group,level=c("cloaca", "oral", "feather", "skin"))
+
+tissue_level <- c("cloaca", "oral", 
+                  "creast feather", "neck feather", "dorsal feather", "breast feather",
+                  "neck skin","dorsal skin", "breast skin", "skin of preen gland","head skin", "break", "leg and foot")
+points$tissue_explanation <- factor(points$tissue_explanation, level=tissue_level)
+
+```
+
+## Plots
+
+```{r, echo=FALSE}
+
+# Set ggplot2 drawing parameter
+main_theme = theme(panel.background=element_blank(),
+                   panel.grid=element_blank(),
+                   axis.line.x=element_line(size=.5, colour="black"),
+                   axis.line.y=element_line(size=.5, colour="black"),
+                   axis.ticks=element_line(color="black"),
+                   axis.text=element_text(color="black", size=7),
+                   legend.position="right",
+                   legend.background=element_blank(),
+                   legend.key=element_blank(),
+                   legend.text= element_text(size=7),
+                   text=element_text(family="sans", size=7))
+
+
+# by group
+p = ggplot(points, aes(x=x, y=y, color=group))
+p = p + geom_point(alpha=.7, size=2) +
+         stat_ellipse(level=0.95)
+
+cl=c("#0099B499","#42B54099","#ED000099","#00468B99" )
+
+p.group <- p+ theme(panel.background=element_blank(),
+                    panel.grid=element_blank(),
+                    axis.line.x=element_line(size=.5, colour="black"),
+                    axis.line.y=element_line(size=.5, colour="black"),
+                    axis.ticks=element_line(color="white"),
+                    axis.text=element_text(color="white", size=7),
+                    legend.position="right",
+                    legend.background=element_blank(),
+                    legend.key=element_blank(),
+                    legend.text= element_text(size=7),
+                    text=element_text(family="sans", size=7))+scale_color_manual(values =cl )
+
+# p.group
+    
+# by id
+p = ggplot(points, aes(x=x, y=y, shape=group, color=pedigreeID))
+p = p + geom_point(alpha=.7, size=2) +
+  labs(x=paste("PCoA 1 (", format(100 * eig[1] / sum(eig), digits=4), "%)", sep=""),
+       y=paste("PCoA 2 (", format(100 * eig[2] / sum(eig), digits=4), "%)", sep=""),
+       title="Bray_Curtis PCoA") + main_theme
+p.group.id <- p
+# p.group.id 
+
+# by tissue
+p = ggplot(points, aes(x=x, y=y, color=tissue_explanation, shape=group))
+p = p + geom_point(alpha=.7, size=2) +
+  labs(x=paste("PCoA 1 (", format(100 * eig[1] / sum(eig), digits=4), "%)", sep=""),
+       y=paste("PCoA 2 (", format(100 * eig[2] / sum(eig), digits=4), "%)", sep=""),
+       title="Bray_Curtis PCoA") +
+          main_theme
+p.group.tissue <- p
+# p.group.tissue
+
+
+#Figure S1a
+p.bc_pcoa.1 <- p.group.id+
+  annotation_custom(grob = ggplotGrob(p.group),
+                    xmin=-0.5,
+                    xmax=-0.2,
+                    ymin=min(points$y),
+                    ymax=0) +
+  theme(axis.text.x = element_text(size=10,angle=45,
+                                   hjust=1, vjust=1), 
+        text=element_text(family="sans", size=12, face="bold"))
+p.bc_pcoa.1
+
+#Figure 1a
+p.bc_pcoa.2 <- p.group.tissue+
+  annotation_custom(grob = ggplotGrob(p.group),
+                    xmin=-0.5,
+                    xmax=-0.2,
+                    ymin=min(points$y),
+                    ymax=0) +
+  theme(axis.text.x = element_text(size=10,angle=45,
+                                   hjust=1, vjust=1), 
+        text=element_text(family="sans", size=12, face="bold"))
+p.bc_pcoa.2
+```
+
+
+## Permanova analysis
+```{r}
+# all samples
+adonis_group <- adonis2(bray_curtis~design$group+design$pedigreeID,
+                        permutations = 999, by="margin")
+adonis_group
+
+
+# only feather samples
+design_feather <- design[design$tissue_type=="feather",]
+bray_curtis_feather = bray_curtis[rownames(design_feather), ] 
+bray_curtis_feather = bray_curtis_feather[,rownames(design_feather)] 
+
+
+adonis2(bray_curtis_feather~design_feather$pedigreeID,
+        permutations = 999, by="margin")
+
+
+#only skin samples
+design_skin <- design[design$group=="skin",]
+bray_curtis_skin = bray_curtis[rownames(design_skin), ] 
+
+bray_curtis_skin = bray_curtis_skin[,rownames(design_skin)] 
+
+adonis2(bray_curtis_skin~design_skin$pedigreeID,
+        permutations = 999, by="margin")
+
+```
+

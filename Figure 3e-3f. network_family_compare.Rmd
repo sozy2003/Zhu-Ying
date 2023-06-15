@@ -1,0 +1,176 @@
+---
+title: "Difference in bacterial co-occurrence networks in four groups"
+author: "Zhu Ying"
+date: "2023-06-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R packages
+```{r}
+
+
+package_list <- c("reshape2","ggplot2", 
+                  "dplyr","igraph" )
+
+
+
+for(p in package_list){
+  if(!suppressWarnings(suppressMessages(require(p, character.only = TRUE, quietly = TRUE, warn.conflicts = FALSE)))){
+    install.packages(p, repos=site)
+    suppressWarnings(suppressMessages(library(p, character.only = TRUE, quietly = TRUE, warn.conflicts = FALSE)))
+  }
+}
+
+
+source("matrix2igraph.R")
+
+source("net_pro.R")
+
+source("node_pro.R")
+
+
+```
+
+## Input files
+```{r}
+load("net_family_cloaca_.Rdata")
+load("net_family_oral_.Rdata")
+load("net_family_feather_.Rdata")
+load("net_family_skin_.Rdata")
+load("common_network.Rdata")
+```
+
+
+
+## The number of edges, clusters, and vertices and average path length
+
+```{r}
+cloaca_igraph<-g_cloaca  
+oral_igraph <- g_oral
+feather_igraph <- g_feather
+skin_igraph <- g_skin
+
+cloaca_igraph_net_pro<-net_pro(cloaca_igraph)
+oral_igraph_net_pro<-net_pro(oral_igraph)
+feather_igraph_net_pro<-net_pro(feather_igraph)
+skin_igraph_net_pro<-net_pro(skin_igraph)
+
+
+igraph_net_pro <- as.data.frame(cloaca_igraph_net_pro)
+colnames(igraph_net_pro) <- "cloaca"
+igraph_net_pro$oral <- (as.data.frame(oral_igraph_net_pro))$value
+igraph_net_pro$feather <- (as.data.frame(feather_igraph_net_pro))$value
+igraph_net_pro$skin <- (as.data.frame(skin_igraph_net_pro))$value
+
+
+igraph_net_pro_t <- as.data.frame(t(igraph_net_pro))
+igraph_net_pro_t$group <- factor(rownames(igraph_net_pro_t), levels=rownames(igraph_net_pro_t))
+igraph_net_pro_t
+
+
+igraph_net_pro_t_melt <- melt(igraph_net_pro_t, id.vars = "group") 
+
+
+cl=c("#0099B499","#42B54099","#ED000099","#00468B99" )
+
+main_theme = theme(panel.background=element_blank(),
+                   panel.grid=element_blank(),
+                   axis.line.x=element_line(size=.5, colour="black"),
+                   axis.line.y=element_line(size=.5, colour="black"),
+                   axis.ticks=element_line(color="black"),
+                   axis.text=element_text(color="black", size=7),
+                   legend.position="right",
+                   legend.background=element_blank(),
+                   legend.key=element_blank(),
+                   legend.text= element_text(size=7),
+                   text=element_text(family="sans", size=7))
+
+
+p <- ggplot(igraph_net_pro_t_melt[igraph_net_pro_t_melt$variable%in%c("num.edges",
+                                                                 "num.vertices",
+                                                                 "average.path.length",
+                                                                 "no.clusters"),])+
+  geom_bar(aes(x=group, y=value, fill=group), stat = "identity")+main_theme+
+  facet_wrap(~variable, scales = "free_y" )
+
+p <- p+scale_fill_manual(values =cl)+theme_classic()+
+    labs(x= NULL, y=NULL) 
+p  #Figure 3e
+```
+
+
+## Connection degree of taxa in co-occurrence network at the family level
+```{r}
+cloaca_igraph_node_pro<-node_pro(cloaca_igraph)
+
+
+oral_igraph_node_pro<-node_pro(oral_igraph)
+
+feather_igraph_node_pro<-node_pro(feather_igraph)
+
+skin_igraph_node_pro<-node_pro(skin_igraph)
+
+
+cloaca_igraph_node_pro <- as.data.frame(cloaca_igraph_node_pro)
+cloaca_igraph_node_pro$group <- "cloaca"
+cloaca_igraph_node_pro$ID <- rownames(cloaca_igraph_node_pro)
+
+cloaca_igraph_node_pro$degree_standrize <- (cloaca_igraph_node_pro$igraph.degree/sum(cloaca_igraph_node_pro$igraph.degree))*100
+
+
+
+oral_igraph_node_pro <- as.data.frame(oral_igraph_node_pro)
+oral_igraph_node_pro$group <- "oral"
+oral_igraph_node_pro$ID <- rownames(oral_igraph_node_pro)
+
+oral_igraph_node_pro$degree_standrize <- (oral_igraph_node_pro$igraph.degree/sum(oral_igraph_node_pro$igraph.degree))*100
+
+
+feather_igraph_node_pro <- as.data.frame(feather_igraph_node_pro)
+feather_igraph_node_pro$group <- "feather"
+feather_igraph_node_pro$ID <- rownames(feather_igraph_node_pro)
+
+feather_igraph_node_pro$degree_standrize <- (feather_igraph_node_pro$igraph.degree/sum(feather_igraph_node_pro$igraph.degree))*100
+
+
+skin_igraph_node_pro <- as.data.frame(skin_igraph_node_pro)
+skin_igraph_node_pro$group <- "skin"
+skin_igraph_node_pro$ID <- rownames(skin_igraph_node_pro)
+
+skin_igraph_node_pro$degree_standrize <- (skin_igraph_node_pro$igraph.degree/sum(skin_igraph_node_pro$igraph.degree))*100
+
+
+
+igraph_node_pro <- rbind(cloaca_igraph_node_pro, 
+                         oral_igraph_node_pro,
+                         feather_igraph_node_pro,
+                         skin_igraph_node_pro
+)
+igraph_node_pro$group <- factor(igraph_node_pro$group, 
+                                level=c("cloaca", "oral", "feather", "skin"))
+
+
+igraph_node_pro$vip_species<- igraph_node_pro$ID
+igraph_node_pro$vip_species[igraph_node_pro$ID%in%vip_species_list] <- "vip"
+igraph_node_pro$vip_species[!igraph_node_pro$ID%in%vip_species_list] <- "other"
+
+
+igraph_node_pro$ID <- factor(igraph_node_pro$ID, 
+                             level=unique(igraph_node_pro$ID))
+
+p <- ggplot(igraph_node_pro, aes(x=group, y=ID, col=vip_species, 
+                                 size=igraph.cen.degree))+ 
+  geom_point(alpha=0.7)+theme_bw()+xlab("")+ylab("")+
+  theme(axis.text.x = element_text(angle=45, hjust=1,vjust=1))+
+  scale_color_manual(values =c("#636363", "#78c679"))
+p  #Figure 3f
+
+
+# ggsave(p, file="network_node_family_group_vip.pdf", height =8 , width =6 )
+
+```
+

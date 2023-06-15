@@ -1,0 +1,387 @@
+---
+title: "Random forest models"
+author: "Zhu Ying"
+date: "2023-06-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R packages
+
+```{r }
+
+package_list <- c("randomForest","ggplot2","pheatmap", "tidyr","dplyr", "patchwork")
+
+for(p in package_list){
+  if(!suppressWarnings(suppressMessages(require(p, character.only = TRUE, quietly = TRUE, warn.conflicts = FALSE)))){
+    install.packages(p, repos=site)
+    suppressWarnings(suppressMessages(library(p, character.only = TRUE, quietly = TRUE, warn.conflicts = FALSE)))
+  }
+}
+```
+
+
+
+## Input files
+```{r}
+# Design of experiment
+design = read.table("metadata.txt", header=T, row.names= 1, sep="\t") 
+
+#group by skin, feather, oral, cloaca
+design$group <- design$tissue
+design$group[design$tissue%in%c("F", "G", "H", "I", "K", "L", "M")] <- "skin"
+design$group[design$tissue%in%c("D", "E", "FY", "N")] <- "feather"
+design$group[design$tissue=="B"] <- "oral"
+design$group[design$tissue=="C"] <- "cloaca"
+
+#subset
+design <- design[design$tissue_type!="environement",]
+
+design$group2 <- design$group
+design$group2[design$tissue%in%c("F", "K", "L", "I")] <- "skin_feather"
+design$group2[design$tissue%in%c("G", "M", "H")] <- "skin_nonfeather"
+
+
+metadata <- design
+metadata$group = as.factor(metadata$group)
+
+# ramdomly subset data
+set.seed(221028)
+idx = sample(1:152, size = 105, replace = F)
+
+idx = 1:152 %in% idx
+
+metadata_train=metadata[idx,]
+metadata_test=metadata[!rownames(metadata)%in%rownames(metadata_train),]
+```
+
+## Select taxonomy level
+```{r}
+for(i in c("2Phylum","3Class","4Order","5Family","6Genus","8OTU0.1")){
+  # i="5Family"
+  set.seed(0)
+  table = read.table(paste0("tax_",i,".txt"),header = T, row.names = 1)
+  table = table[,rownames(metadata_train)]
+  rf = randomForest(t(table), metadata_train$group, importance=T, proximity=T, ntree = 1000)
+  print(i)
+  print(rf) # Table S3
+  
+
+
+table =read.table("tax_5Family.txt",header = T, row.names = 1)
+idx = rownames(metadata_train) %in% colnames(table)
+metadata_train = metadata_train[idx,]
+otu_sub = table[, rownames(metadata_train)] 
+dim(otu_sub)
+
+}
+```
+
+
+## Select best seed
+```{r}
+
+for (i in 0:9){
+  set.seed(i)
+  rf = randomForest(t(otu_sub), metadata_train$group, importance=TRUE, proximity=TRUE, ntree = 1000)
+  print(i)
+  print(rf)
+}
+
+#choose set.seed(0)
+
+```
+
+## Models
+```{r}
+set.seed(0)
+rf = randomForest(t(otu_sub), metadata_train$group, importance=TRUE, proximity=TRUE, ntree = 1000)
+print(rf)
+
+# Random Forest Cross Validation
+set.seed(1) 
+result = rfcv(t(otu_sub), metadata_train$group, cv.fold=5)
+# check the error rate
+result$error.cv
+
+
+
+
+```
+
+
+
+
+##Cross-validation error rate 
+
+```{r , echo=FALSE}
+
+
+# plot  
+with(result, plot(n.var, error.cv, log="x", type="o", lwd=2))
+
+#multiple plots
+error.cv0 = data.frame(num = result$n.var, error.1 =  result$error.cv)
+for (i in 1:(1+4)){
+  print(i)
+  set.seed(i)
+  result= rfcv(t(otu_sub), metadata_train$group, cv.fold=5) #  scale = "log", step = 0.9
+  error.cv0 = cbind(error.cv0, result$error.cv)
+}
+error.cv0 
+
+
+n.var = error.cv0$num
+
+error.cv = error.cv0[,2:6]
+colnames(error.cv) = paste('err',1:5,sep='.')
+
+err.mean = apply(error.cv,1,mean)
+# x+error+mean
+allerr = data.frame(num=n.var,err.mean=err.mean,error.cv)
+# number of otus selected 
+optimal = 13
+
+#Figure 2a
+p = ggplot() + 
+  geom_line(aes(x = allerr$num, y = allerr$err.1), colour = 'grey') + 
+  geom_line(aes(x = allerr$num, y = allerr$err.2), colour = 'grey') + 
+  geom_line(aes(x = allerr$num, y = allerr$err.3), colour = 'grey') + 
+  geom_line(aes(x = allerr$num, y = allerr$err.4), colour = 'grey') + 
+  geom_line(aes(x = allerr$num, y = allerr$err.5), colour = 'grey') + 
+  geom_line(aes(x = allerr$num, y = allerr$err.mean), colour = 'black') + 
+  geom_vline(xintercept = optimal, colour='black', lwd=0.36, linetype="dashed") + 
+  coord_trans(x = "log2") + 
+  scale_x_continuous(breaks = c(1, 2, 5, 10, 20, 30, 50, 100, 200)) + # , max(allerr$num)
+  labs(title=paste('Training set (n = ', dim(t(otu_sub))[1],')', sep = ''), 
+       x='Number of families ', y='Cross-validation error rate') + 
+  annotate("text", x = optimal, y = max(allerr$err.mean), label=paste("optimal = ", optimal, sep="")) + theme_bw()
+p.optimal.families <- p
+p.optimal.families
+```
+
+
+
+## Top feature
+```{r}
+imp= as.data.frame(rf$importance)
+imp = imp[order(imp$MeanDecreaseAccuracy, decreasing = T),]
+head(imp,n=optimal)
+
+imp = head(imp, n = optimal)
+imp = imp[order(imp$MeanDecreaseAccuracy, decreasing = F),]
+# short name
+imp$Family = gsub("Bacteria\\|","",rownames(imp))
+
+imp$Phylum = gsub("\\|.*","",imp$Family)
+
+imp$Family = factor(imp$Family, levels = imp$Family)
+
+p = ggplot(imp, aes(x = Family, y = MeanDecreaseAccuracy, fill = Phylum)) +   
+  geom_bar(stat = "identity") + 
+  coord_flip() + theme_bw()
+
+imp$Family = gsub(".*\\|","",imp$Family)
+imp$Family = factor(imp$Family, levels = imp$Family)
+p = ggplot(imp, aes(x = Family, y = MeanDecreaseAccuracy, fill = Phylum)) +   
+  geom_bar(stat = "identity") + 
+  coord_flip() + theme_bw()
+
+p.accuracy <- p
+p.accuracy #Figure 2a
+```
+
+```{r}
+
+p.random <- p.optimal.families/p.accuracy
+p.random #Figure 2a
+```
+
+
+## heatmap for training set 
+```{r}
+filter_count <- read.table("count_5Family.txt", row.names= 1,  header=T, sep="\t")
+filter_count <- filter_count[-nrow(filter_count),]
+# colnames(filter_count)
+
+#rearrange the column of filter_count according to the row names of metadata
+filter_count = filter_count[, rownames(metadata)]
+
+exprSet <- filter_count
+
+
+#cross filtering
+metadata <- metadata[rownames(metadata)%in%colnames(exprSet),]
+
+#------------------------------------training set----------
+#filtering raw data for plotting based on results of above differential analysis 
+sub_g_train <- exprSet[rownames(exprSet)%in%rownames(imp),
+                       colnames(exprSet)%in%rownames(metadata_train)]
+
+
+sub_g_test <- exprSet[rownames(exprSet)%in%rownames(imp),
+                      colnames(exprSet)%in%rownames(metadata_test)]
+
+
+# rename the row names of sub_g
+library(tidyr)
+sub_g_train$whole <- rownames(sub_g_train)
+sub_g_train <- separate(sub_g_train,whole,into=c("kindom", "phylum", "class", "order", "family"),
+                  sep="\\|")
+# sub_g_train <- sub_g_train[sub_g_train$genus!="Unassigned",]
+rownames(sub_g_train) <- sub_g_train$family
+
+
+# calculate the mean count for each day
+
+family_name<- sub_g_train[106:110]
+
+
+sub_g_train <- sub_g_train[,rownames(metadata_train)]
+
+sampFile = as.data.frame(metadata_train$tissue_explanation,row.names = row.names(metadata_train))
+colnames(sampFile)[1] = "tissue"
+mat_t = t(sub_g_train)
+mat_t2 = merge(sampFile, mat_t, by="row.names")
+mat_t2 = mat_t2[,-1]
+mat_mean = aggregate(mat_t2[,-1], by=mat_t2[1], FUN=mean) # mean
+
+otu_norm_group = do.call(rbind, mat_mean)[-1,]
+colnames(otu_norm_group) = mat_mean$tissue
+
+
+
+otu_norm_group <- apply(otu_norm_group, 2, as.numeric)
+rownames(otu_norm_group) <- colnames(mat_t)
+
+#reorder
+
+tissue_level <- c("cloaca", "oral", 
+                  "creast feather", "neck feather", "dorsal feather", "breast feather",
+                  "neck skin","dorsal skin", "breast skin", "skin of preen gland","head skin", "break", "leg and foot")
+
+otu_norm_group <- otu_norm_group[, tissue_level]
+# column annotation for heatmap 
+
+temp <- otu_norm_group
+colnames(temp)[colnames(temp)%in%c("neck skin","dorsal skin", "breast skin", "skin of preen gland","head skin", "break", "leg and foot")] <- "skin"
+colnames(temp)[colnames(temp)%in%c("creast feather", "neck feather", "dorsal feather", "breast feather")] <- "feather"
+colnames(temp)[colnames(temp)=="oral"] <- "oral"
+colnames(temp)[colnames(temp)=="cloaca"] <- "cloaca"
+
+stage <- colnames(temp)
+stage <- as.data.frame(stage)
+rownames(stage) <- colnames(otu_norm_group)
+
+
+
+#row annotation for heatmap
+rowgroup <- family_name$phylum
+rowgroup <- as.data.frame(rowgroup)
+colnames(rowgroup) <- "phylum"
+
+rownames(rowgroup) <- rownames(otu_norm_group)
+
+#reorder
+train_order <- c("Acetobacteraceae","Micrococcaceae","Cytophagaceae","Dermacoccaceae",
+                 "Intrasporangiaceae","Bacillaceae_1","Caulobacteraceae","Clostridiaceae_1",
+                 "Bifidobacteriaceae", "Lachnospiraceae", "Neisseriaceae", "Ruminococcaceae",
+                 "Campylobacteraceae")
+
+
+otu_norm_group <- otu_norm_group[train_order,]
+
+
+ann_colors = list( stage=c(cloaca="#0099B499", oral="#42B54099", feather="#ED000099", skin="#00468B99"))
+
+#Figure 2b
+pheatmap(otu_norm_group,scale="row",
+         cluster_cols = F, 
+          cluster_rows = F,
+         annotation_col=stage,
+         # annotation_row=rowgroup,
+         annotation_colors = ann_colors,
+         width = 6, height = 6)  
+```
+
+## heatmap for test set
+```{r}
+sub_g_test <- exprSet[rownames(exprSet)%in%rownames(imp),
+                       colnames(exprSet)%in%rownames(metadata_test)]
+
+
+sub_g_test <- exprSet[rownames(exprSet)%in%rownames(imp),
+                      colnames(exprSet)%in%rownames(metadata_test)]
+
+
+
+# rename the row names of sub_g
+
+sub_g_test$whole <- rownames(sub_g_test)
+sub_g_test <- separate(sub_g_test,whole,into=c("kindom", "phylum", "class", "order", "family"),
+                        sep="\\|")
+# sub_g_test <- sub_g_test[sub_g_test$genus!="Unassigned",]
+rownames(sub_g_test) <- sub_g_test$family
+
+# table(colnames(sub_g_test)[1:47]==rownames(metadata_test))
+
+
+family_name<- sub_g_test[48:52]
+
+
+sub_g_test <- sub_g_test[,rownames(metadata_test)]
+
+sampFile = as.data.frame(metadata_test$tissue_explanation,row.names = row.names(metadata_test))
+colnames(sampFile)[1] = "tissue"
+mat_t = t(sub_g_test)
+mat_t2 = merge(sampFile, mat_t, by="row.names")
+mat_t2 = mat_t2[,-1]
+mat_mean = aggregate(mat_t2[,-1], by=mat_t2[1], FUN=mean) # mean
+
+otu_norm_group = do.call(rbind, mat_mean)[-1,]
+colnames(otu_norm_group) = mat_mean$tissue
+
+
+library(dplyr)
+otu_norm_group <- apply(otu_norm_group, 2, as.numeric)
+rownames(otu_norm_group) <- colnames(mat_t)
+
+#reorder
+
+tissue_level <- c("cloaca", "oral", 
+                  "creast feather", "neck feather", "dorsal feather", "breast feather",
+                  "neck skin","dorsal skin", "breast skin", "skin of preen gland","head skin", "break", "leg and foot")
+
+otu_norm_group <- otu_norm_group[, tissue_level]
+# column annotation for heatmap 
+
+temp <- otu_norm_group
+colnames(temp)[colnames(temp)%in%c("neck skin","dorsal skin", "breast skin", "skin of preen gland","head skin", "break", "leg and foot")] <- "skin"
+colnames(temp)[colnames(temp)%in%c("creast feather", "neck feather", "dorsal feather", "breast feather")] <- "feather"
+colnames(temp)[colnames(temp)=="oral"] <- "oral"
+colnames(temp)[colnames(temp)=="cloaca"] <- "cloaca"
+
+stage <- colnames(temp)
+stage <- as.data.frame(stage)
+rownames(stage) <- colnames(otu_norm_group)
+
+# rownames(otu_norm_group)==rownames(sub_g_train)
+
+#reorder
+otu_norm_group <- otu_norm_group[train_order,]
+
+ann_colors = list( stage=c(cloaca="#0099B499", oral="#42B54099", feather="#ED000099", skin="#00468B99"))
+
+#Figure 2c
+pheatmap(otu_norm_group,scale="row",
+         cluster_cols = F, 
+         cluster_rows = F,
+         annotation_col=stage,
+         # annotation_row=rowgroup,
+         width = 6, height = 6,
+         annotation_colors = ann_colors)
+```
+

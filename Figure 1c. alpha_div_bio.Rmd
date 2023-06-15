@@ -1,0 +1,129 @@
+---
+title: "alpha diversity of body-wide microbiome in crested ibis"
+author: "Zhu Ying"
+date: "2023-06-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load R packages
+```{r}
+options(warn = -1)
+library(lme4)
+if(!require(lmerTest))install.packages("lmerTest")
+library(lmerTest)
+if(!require(sjstats))install.packages("sjstats")
+library(sjstats)
+library(performance)
+library(ggplot2)
+```
+
+
+
+## design and alpha diversity
+
+```{r}
+design = read.table("metadata.txt", header=T, row.names= 1, sep="\t") 
+
+#group by skin, feather, oral, cloaca
+design$group <- design$tissue
+design$group[design$tissue%in%c("F", "G", "H", "I", "K", "L", "M")] <- "skin"
+design$group[design$tissue%in%c("D", "E", "FY", "N")] <- "feather"
+design$group[design$tissue=="B"] <- "oral"
+design$group[design$tissue=="C"] <- "cloaca"
+
+#subset samples
+design <- design[design$tissue_type!="environement",]
+
+#alpha diversity
+alphadiv= read.table("vegan_bio.txt", header=T, row.names= 1, sep="\t")
+
+#cross check
+design <- design[rownames(design)%in%rownames(alphadiv),]
+dim(design)
+
+alphadiv = alphadiv[rownames(design), ]
+
+# merge design and alpha diversity into one data frame 
+alpha = cbind(alphadiv, design)
+alpha$group <- factor(alpha$group,level=c("cloaca", "oral", "feather", "skin"))
+
+tissue_level <- c("cloaca", "oral", 
+                  "creast feather", "neck feather", "dorsal feather", "breast feather",
+                  "neck skin","dorsal skin", "breast skin", "skin of preen gland","head skin", "break", "leg and foot")
+alpha$tissue_explanation <- factor(alpha$tissue_explanation, level=tissue_level)
+
+```
+
+## Plot
+```{r}
+# Set ggplot2 drawing parameter.
+main_theme = theme(panel.background=element_blank(),
+                   panel.grid=element_blank(),
+                   axis.line.x=element_line(size=.5, colour="black"),
+                   axis.line.y=element_line(size=.5, colour="black"),
+                   axis.ticks=element_line(color="black"),
+                   axis.text=element_text(color="black", size=7),
+                   legend.position="right",
+                   legend.background=element_blank(),
+                   legend.key=element_blank(),
+                   legend.text= element_text(size=7),
+                   text=element_text(family="sans", size=7))
+cl=c("#0099B499","#42B54099","#ED000099","#00468B99" )
+p=ggplot(alpha,aes(x=as.factor(group),y=shannon, color=group))+
+  geom_boxplot(alpha=1, outlier.size=0, size=0.7, width=0.5, fill="transparent")+
+  labs(x= NULL, y="Shannon") + 
+  main_theme
+p=p+geom_jitter(position=position_jitter(0.17), size=1, alpha=0.7)
+p=p+theme(legend.position  ="none")+scale_color_manual(values =cl )
+p.group <- p
+
+
+
+p=ggplot(alpha,aes(x=as.factor(tissue_explanation),y=shannon, fill=group))+
+  geom_violin(alpha=0.5, trim=F)+
+  labs(x="Body sites", y="Shannon") + main_theme+
+  scale_fill_manual(values=cl)
+p=p+geom_jitter(position=position_jitter(0.17), size=0.5, 
+                alpha=0.3)
+p.tissue <- p
+
+#Figure 1c
+p.alpha.div <- p.tissue+
+  annotation_custom(grob = ggplotGrob(p.group),
+                    xmin=1,
+                    xmax=5,
+                    ymin=4.1,
+                    ymax=5.0) +
+  theme(axis.text.x = element_text(size=10,angle=45,
+                                   hjust=1, vjust=1), 
+        text=element_text(family="sans", size=12, face="bold"))
+p.alpha.div
+
+
+```
+
+## Linear mixed models
+```{r}
+#Table S2
+mod0 <- lmer(shannon~1+(1|pedigreeID), alpha, REML=F)
+mod1 <- lmer(shannon~group+(1|pedigreeID), alpha, REML=F)
+mod2 <- lmer(shannon~group+sex+(1|pedigreeID), alpha, REML=F)
+mod3 <- lmer(shannon~group+sex+sampling_age+(1|pedigreeID), alpha, REML=F)
+mod4 <- lmer(shannon~group+sex+sampling_age+group*sex+(1|pedigreeID), alpha, REML=F)
+mod5 <- lmer(shannon~group+sex+sampling_age+sampling_age*group+group*sex+(1|pedigreeID), alpha, REML=F)
+
+AIC(mod0,mod1,mod2,mod3,mod4,mod5)
+# mod3 is the best
+
+mod_final <- lmer(shannon~group+sex+sampling_age+(1|pedigreeID), alpha, REML=T)
+
+summary(mod_final)
+car::Anova(mod_final)
+r2(mod_final)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

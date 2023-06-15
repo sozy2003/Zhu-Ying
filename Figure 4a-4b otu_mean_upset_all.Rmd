@@ -1,0 +1,255 @@
+---
+title: "upset plot"
+author: "Zhu Ying"
+date: "2023-06-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R package
+```{r}
+rm(list=ls()) 
+if(!require("dplyr"))install.packages("dplyr")
+library(dplyr)
+
+if(!require("UpSetR"))BiocManager::install("UpSetR")
+library(UpSetR)
+library(ggsci)
+ library("ggplot2") 
+ library("vegan")
+
+```
+
+
+## Input files
+```{r}
+otutab <-  read.delim("otutab.txt", row.names= 1,  header=T, sep="\t")
+
+
+design = read.table("metadata_164.txt", header=T, row.names= 1, sep="\t") 
+
+#group by skin, feather, oral, cloaca
+design$group <- design$tissue
+design$group[design$tissue%in%c("F", "G", "H", "I", "K", "L", "M")] <- "skin"
+design$group[design$tissue%in%c("D", "E", "FY", "N")] <- "feather"
+design$group[design$tissue=="B"] <- "oral"
+design$group[design$tissue=="C"] <- "cloaca"
+
+design$group[design$tissue%in%c("Qi", "Chi", "Ni", "Di", "Loach")] <- "envionment"
+
+
+
+design$group2 <- design$group
+design$group2[design$tissue%in%c("F", "K", "L", "I")] <- "skin_feather"
+design$group2[design$tissue%in%c("G", "M", "H")] <- "skin_nonfeather"
+
+norm = t(otutab)/colSums(otutab,na=T)*100
+# rowSums(norm)
+
+option <- 0   
+idx = colMeans(norm) > option  #option=0
+
+HA = norm[,idx]
+# dim(HA)
+# rowSums(HA)
+HA <- HA[rownames(design),]
+
+
+# by group
+merge=cbind(HA, design[,c("group"),drop=F])
+HA_group_mean = merge %>% group_by(group) %>% summarise_all(mean)
+HA_t = as.data.frame(cbind(c("All", round(colMeans(HA), digits = 6)),t(HA_group_mean)), stringsAsFactors = F)
+rownames(HA_t)[1] = "OTUID"
+
+
+colnames(HA_t) <- HA_t[1,]
+HA_t <- HA_t[-1,]
+
+
+HA_t1 <- as.data.frame(lapply(HA_t, as.numeric))
+rownames(HA_t1) <- rownames(HA_t)
+
+count <- HA_t1 
+threshold <- 0.1
+
+# remain ASV with relative abundance higher than 0.1%
+count[count>threshold] <- 1
+count[count<=threshold] <- 0
+
+upset.dat <- count
+upset.dat <- upset.dat[,c(1,2,5,4,6,3)]
+
+```
+
+
+
+## Upset plot for cloaca, oral, feather, skin and env. 
+```{r}
+
+cl=pal_aaas(alpha=0.6)(5)
+setsBarColors <- cl
+
+#Figure 3a
+upset(upset.dat[,2:6],order.by = c("freq"),
+      query.legend = "top",
+      queries = list(list(query = intersects, params = list("feather","skin"), color = "#925E9F99", active = T),
+                     list(query = intersects, params = list("cloaca", "oral"), color = "#FDAF9199", active = T),
+                     list(query = intersects, params = list("cloaca", "oral","feather","skin"), color = "#AD002A99", active = T),
+                     list(query = intersects, params = list("cloaca",  "envionment"), color = "#EE000099", active = T),
+                     list(query = intersects, params = list( "oral", "envionment"), color = "#EE000099", active = T),
+                     list(query = intersects, params = list("feather","envionment"), color = "#EE000099", active = T), 
+                     list(query = intersects, params = list("cloaca", "oral","feather","skin", "envionment"), color = "#ADB6B699", active = T)
+                     , list(query = intersects, params = list("skin", "envionment"), color = "#EE000099", active = T)),
+      
+      empty.intersections = "on",
+      point.size = 3, 
+      line.size = 1,
+      number.angles = 0,
+      text.scale=c(1.5, 1.2, 1.2, 1, 1.5, 1),
+      matrix.color = "#4285F4",
+      main.bar.color = "black",
+      mainbar.y.label = "ASV Intersections Size",
+      sets.bar.color = setsBarColors)
+
+
+```
+
+
+## Group by tissue
+```{r}
+merge_tissue=cbind(HA, design[,c("tissue_explanation"),drop=F])
+HA_group_mean_tissue = merge_tissue %>% group_by(tissue_explanation) %>% summarise_all(mean)
+HA_t_tissue = as.data.frame(cbind(c("All", round(colMeans(HA), digits = 6)),t(HA_group_mean_tissue)), stringsAsFactors = F)
+rownames(HA_t_tissue)[1] = "OTUID"
+
+
+colnames(HA_t_tissue) <- HA_t_tissue[1,]
+HA_t_tissue <- HA_t_tissue[-1,]
+
+
+
+HA_t1_tissue <- as.data.frame(lapply(HA_t_tissue, as.numeric))
+rownames(HA_t1_tissue) <- rownames(HA_t_tissue)
+
+count_tissue <- HA_t1_tissue 
+threshold <- 0.1
+
+count_tissue[count_tissue>threshold] <- 1
+count_tissue[count_tissue<=threshold] <- 0
+
+```
+
+
+## Upset plot for feather and skin samples from same body sites
+```{r}
+venn.dat <- count_tissue
+sub <- c("creast.feather","neck.feather","dorsal.feather","breast.feather",
+         "head.skin","neck.skin","dorsal.skin", "breast.skin" )
+
+
+test <- venn.dat[,sub]
+
+# pdf("p.upset.8groups.pdf", width = 8, height=6)
+
+upset(test,nsets = 8, nintersects=36,number.angles = 30,query.legend = "top",
+       queries = list(list(query = intersects, 
+                           params = list("creast.feather","head.skin"), 
+                           color = "#82491EFF", active = T),
+                      list(query = intersects, 
+                           params = list("neck.feather", "neck.skin"), 
+                           color = "#82491EFF", active = T),
+                      list(query = intersects, 
+                           params = list("dorsal.feather", "dorsal.skin"), 
+                           color = "#82491EFF", active = T),
+                      list(query = intersects, 
+                           params = list("breast.feather", "breast.skin"), 
+                           color = "#82491EFF", active = T),
+                      list(query = intersects,
+                           params = list("head.skin", "neck.skin"),
+                           color = "#82491EFF", active = T),
+                      list(query = intersects,
+                           params = list("head.skin", "dorsal.skin"),
+                           color = "#82491EFF", active = T),
+                      list(query = intersects,
+                           params = list("head.skin", "breast.skin"),
+                           color = "#82491EFF", active = T),
+                      list(query = intersects,
+                           params = list("neck.skin", "dorsal.skin"),
+                           color = "#82491EFF", active = T),
+                      list(query = intersects,
+                           params = list("neck.skin", "breast.skin"),
+                           color = "#82491EFF", active = T),
+                      list(query = intersects,
+                           params = list("breast.skin", "dorsal.skin"),
+                           color = "#82491EFF", active = T),
+                      list(query = intersects,
+                           params = list("creast.feather", "neck.feather"),
+                           color = "#FFF2CC", active = T),
+                      list(query = intersects,
+                           params = list("creast.feather", "dorsal.feather"),
+                           color = "#FFF2CC", active = T),
+                      list(query = intersects,
+                           params = list("creast.feather", "breast.feather"),
+                           color = "#FFF2CC", active = T),
+                      list(query = intersects,
+                           params = list("neck.feather", "dorsal.feather"),
+                           color = "#FFF2CC", active = T),
+                      list(query = intersects,
+                           params = list("neck.feather", "breast.feather"),
+                           color = "#FFF2CC", active = T),
+                      list(query = intersects,
+                           params = list("breast.feather", "dorsal.feather"),
+                           color = "#FFF2CC", active = T)
+                      ),
+       point.size = 2, 
+       line.size = 1, 
+       empty.intersections = "on",
+       mainbar.y.label = "ASV Intersections Size",
+       sets.x.label = "Asv Per body niche",
+       text.scale =c(1.3, 1.3, 1, 1, 2, 0.75),
+       matrix.color = "black",
+       main.bar.color = "black",
+       sets.bar.color = pal_lancet("lanonc", alpha=0.6)(8))
+# dev.off()
+```
+
+## Bray-curtis distance
+```{r}
+sub <- c("creast feather","neck feather","dorsal feather","breast feather",
+          "head skin","neck skin","dorsal skin", "breast skin" )
+ design_sub <-design[design$tissue_explanation%in%sub,] 
+ 
+ otutab_sub <- otutab[,rownames(design_sub)]
+ 
+ #按照sub的分类，把不同的OTU汇总一起。
+ otutab_sub_t <- as.data.frame(t(otutab_sub))
+ #增加一列
+ otutab_sub_t <- otutab_sub_t[rownames(design_sub),]
+ otutab_sub_t$tissue_explanation <-design_sub$tissue_explanation 
+ #汇总
+ 
+ ncol <- ncol(otutab_sub_t)
+ 
+ # otutab_sub_t_sum <-  aggregate(otutab_sub_t[,-3023], by=otutab_sub_t[3023], FUN=sum)
+ otutab_sub_t_sum <-  aggregate(otutab_sub_t[,- ncol], by=otutab_sub_t[ ncol], FUN=sum)
+ 
+ rownames(otutab_sub_t_sum) <- otutab_sub_t_sum$tissue_explanation
+ otutab_sub_t_sum <- otutab_sub_t_sum[,-1]
+
+ # normalization to total 100 
+ per <-  t(t(otutab_sub_t_sum)/colSums(otutab_sub_t_sum,na=T)) * 100 
+ 
+ #计算b-c距离
+ bray <- vegdist(per, method="bray", na.rm = T)
+ bray <- as.matrix(bray)
+ 
+ #按照fether, skin, head, neck, dorsal, breast排列。
+
+ bray <- bray[sub,sub]
+ bray #Table S5
+ # write.table(bray, "bray_curtis_feather&skin.txt", sep="\t")
+```
+

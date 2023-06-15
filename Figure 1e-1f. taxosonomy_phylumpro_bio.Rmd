@@ -1,0 +1,264 @@
+---
+title: "Spatial changes in bacterial relative abundance  at the phylum level"
+author: "Zhu Ying"
+date: "2023-06-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load R packages 
+```{r, echo=FALSE}
+rm(list=ls())
+options(warn = -1)
+if(!require(reshape2))install.packages("reshape2")
+if(!require(ggalluvial))install.packages("ggalluvial")
+
+library("reshape2", quietly=T, warn.conflicts=F)
+library("ggalluvial")
+library(ggsci)#配色
+
+library(lme4)
+if(!require(lmerTest))install.packages("lmerTest")
+library(lmerTest)
+if(!require(sjstats))install.packages("sjstats")
+library(sjstats)
+```
+
+
+
+## Input files
+```{r}
+# Design of experiment
+design = read.table("metadata.txt", header=T, row.names= 1, sep="\t") 
+
+#group by skin, feather, oral, cloaca
+design$group <- design$tissue
+design$group[design$tissue%in%c("F", "G", "H", "I", "K", "L", "M")] <- "skin"
+design$group[design$tissue%in%c("D", "E", "FY", "N")] <- "feather"
+design$group[design$tissue=="B"] <- "oral"
+design$group[design$tissue=="C"] <- "cloaca"
+
+#subset
+design <- design[design$tissue_type!="environement",]
+
+design$group2 <- design$group
+design$group2[design$tissue%in%c("F", "K", "L", "I")] <- "skin_feather"
+design$group2[design$tissue%in%c("G", "M", "H")] <- "skin_nonfeather"
+
+
+# raw reads count of each ASV in each sample
+otu_table <-  read.delim("otu_table.txt", row.names= 1,  header=T, sep="\t")
+
+#  taxonomy for each OTU
+taxonomy <-  read.delim("taxonomy.txt", row.names= 1,header=F, sep="\t")
+colnames(taxonomy) <- c("kingdom","phylum","class","order","family","genus","species")
+
+taxonomy <- taxonomy[-1,]
+
+#annotation performance for family, genus and species level
+table(taxonomy$species=="Unassigned")[1]/length(taxonomy$species=="Unassigned")
+table(taxonomy$genus=="Unassigned")[1]/length(taxonomy$genus=="Unassigned")
+table(taxonomy$family=="Unassigned")[1]/length(taxonomy$family=="Unassigned")
+
+
+# select p__Proteobacteria line
+idx <-  taxonomy$phylum == "Proteobacteria"
+taxonomy$full <- as.character(taxonomy$phylum) 
+
+taxonomy[idx,]$full <- as.character(taxonomy[idx,]$class)
+# add annotation for otu table
+tax_count <-  merge(taxonomy, otu_table, by="row.names")
+
+# group by column "full"
+tax_count_sum <-  aggregate(tax_count[,-(1:9)], by=tax_count[9], FUN=sum) # mean
+# rownames
+rownames(tax_count_sum) <-  tax_count_sum$full
+# generate numeric matrix 
+tax_count_sum <-  tax_count_sum[,-1]
+# normalization to total 100 
+per <-  t(t(tax_count_sum)/colSums(tax_count_sum,na=T)) * 100 
+
+
+# descending sort based on abundance 
+mean_sort <- per[(order(-rowSums(per))), ] # decrease sort
+# colSums(mean_sort)
+
+# top10,including Low abundance
+mean_sort<-as.data.frame(mean_sort)
+other <- colSums(mean_sort[10:dim(mean_sort)[1], ])
+mean_sort <- mean_sort[1:(10-1), ]
+mean_sort <- rbind(mean_sort,other)
+rownames(mean_sort)[10] <- c("Low Abundance")
+
+topN<-rownames(mean_sort)
+
+mean_sort <- mean_sort[,rownames(design)]
+
+
+data_all <- mean_sort
+data_all$phylumpro <- rownames(data_all)
+
+data_all <- as.data.frame(melt(data_all , id.vars=c("phylumpro")))
+
+data_all <- merge(data_all, design[c("group","tissue_explanation", "pedigreeID")], by.x="variable", by.y = "row.names")
+data_all$group <- factor(data_all$group,level=c("cloaca", "oral", "feather", "skin"))
+
+tissue_level <- c("cloaca", "oral", 
+                  "creast feather", "neck feather", "dorsal feather", "breast feather",
+                  "neck skin","dorsal skin", "breast skin", "skin of preen gland","head skin", "break", "leg and foot")
+
+data_all$tissue_explanation <- factor(data_all$tissue_explanation,level=tissue_level)
+
+
+
+```
+
+## Plots
+
+```{r, echo=FALSE}
+# Set ggplot2 ploting parameter
+main_theme <-  theme(panel.background=element_blank(),
+                   panel.grid=element_blank(),
+                   axis.line.x=element_line(size=.5, colour="black"),
+                   axis.line.y=element_line(size=.5, colour="black"),
+                   axis.ticks=element_line(color="black"),
+                   axis.text=element_text(color="black", size=7),
+                   legend.position="right",
+                   legend.background=element_blank(),
+                   legend.key=element_blank(),
+                   legend.text= element_text(size=7),
+                   text=element_text(family="sans", size=7))
+
+
+#  Figure 1e, plot by tissue and sample
+p <- ggplot(data_all, aes(x=variable, y = value, fill = phylumpro )) + 
+  geom_bar(stat = "identity",position="fill", width=1)+ 
+  scale_y_continuous(labels = scales::percent) + 
+  facet_grid( ~ tissue_explanation, scales = "free_x", switch = "x") +  main_theme +
+  theme(axis.ticks.x = element_blank(), legend.position="top", axis.text.x = element_blank(), strip.background = element_blank())+
+  xlab("Groups")+ylab("Percentage (%)")           
+
+p
+
+# plot for each group. 对每一组求平均值
+mat <-  mean_sort[,1:(dim(mean_sort)[2]-1)] #去除最后一列
+
+mat_t <-  t(mat)
+
+mat_t2 <-  merge(design[c("group")], mat_t, by="row.names")
+
+rownames(mat_t2) <- mat_t2$Row.names
+mat_t2 <-  mat_t2[,-1]
+
+mat_mean <-  aggregate(mat_t2[,-1], by=mat_t2[1], FUN=sum) # mean by group
+mat_mean_final <-  do.call(rbind, mat_mean)[-1,]
+
+geno <-  mat_mean$group
+colnames(mat_mean_final) <-  geno
+
+mat_mean_final <-  as.data.frame(mat_mean_final)
+
+mat_mean_final$phylumpro <-  rownames(mat_mean_final)
+
+
+data_all <-  as.data.frame(melt(mat_mean_final, id.vars=c("phylumpro")))
+data_all$variable <- factor(data_all$variable,level=c("cloaca", "oral", "feather", "skin"))
+
+
+p <-  ggplot(data_all, aes(x=variable, y = as.numeric(value), fill = phylumpro )) + 
+  geom_bar(stat = "identity",position="fill", width=0.7)+ 
+   scale_y_continuous(labels = scales::percent) + 
+  xlab("Groups")+ylab("Percentage (%)")+main_theme+ 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+tax.stack<- p
+tax.stack
+
+#  Figure 1f, plot by group
+p = ggplot(data = data_all, 
+           aes(x = variable, y = as.numeric(value), alluvium = phylumpro, stratum=phylumpro)) +
+  geom_alluvium(aes(fill = phylumpro), alpha = 0.75) +
+  geom_stratum(aes(fill=phylumpro))+
+  labs(x="Group", y="Relative Abundance (%)")+
+  main_theme 
+tax.alluvium=p
+tax.alluvium 
+ 
+
+#Figure S2, top 10的相对丰度
+mat_t2_melt <- melt(mat_t2, id.vars = "group")
+mat_t2_melt$group <- factor(mat_t2_melt$group, level=c("cloaca", "oral", "feather", "skin"))
+
+colnames(mat_t2_melt)[2] <- "Phylum"
+top10phylum_relative <- ggplot(mat_t2_melt,aes(x=as.factor(group),y=value, fill=Phylum))+
+  geom_boxplot()+
+  geom_jitter(size=0.5, alpha=0.5)+
+  facet_wrap(~Phylum)+theme_classic()+
+  labs(x="Day", y="Relative Abundance (%)")
+top10phylum_relative
+ 
+ 
+ 
+ 
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+## linear mixed models
+```{r}
+
+#Table S2
+mat_t3 <-  merge(design[c("pedigreeID", "tissue", "tissue_explanation", "group","group2", "sex", "sampling_age")], mat_t, by="row.names")
+rownames(mat_t3) <- mat_t3$Row.names
+mat_t3 <- mat_t3[,-1]
+
+
+mod_final <- lmer(Actinobacteria~group+sex+sampling_age+(1|pedigreeID), mat_t3,REML=T)
+car::Anova(mod_final)
+r2(mod_final)
+
+mod_final <- lmer(Gammaproteobacteria~group+sex+sampling_age+(1|pedigreeID), mat_t3,REML=T)
+car::Anova(mod_final)
+r2(mod_final)
+
+mod_final <- lmer(Firmicutes~group+sex+sampling_age+(1|pedigreeID), mat_t3,REML=T)
+car::Anova(mod_final)
+r2(mod_final)
+
+
+
+mod_final <- lmer(Alphaproteobacteria~group+sex+sampling_age+(1|pedigreeID), mat_t3,REML=T)
+car::Anova(mod_final)
+r2(mod_final)
+
+
+
+mod_final <- lmer(Bacteroidetes~group+sex+sampling_age+(1|pedigreeID), mat_t3,REML=T)
+car::Anova(mod_final)
+r2(mod_final)
+
+colnames(mat_t3)[colnames(mat_t3)=="Deinococcus-Thermus"] <- "Deinococcus"
+mod_final <- lmer(Deinococcus~group+sex+sampling_age+(1|pedigreeID), mat_t3,REML=T)
+car::Anova(mod_final)
+r2(mod_final)
+
+
+mod_final <- lmer(Betaproteobacteria~group+sex+sampling_age+(1|pedigreeID), mat_t3,REML=T)
+car::Anova(mod_final)
+r2(mod_final)
+
+mod_final <- lmer(Fusobacteria~group+sex+sampling_age+(1|pedigreeID), mat_t3,REML=T)
+car::Anova(mod_final)
+r2(mod_final)
+
+mod_final <- lmer(Tenericutes~group+sex+sampling_age+(1|pedigreeID), mat_t3,REML=T)
+car::Anova(mod_final)
+r2(mod_final)
+
+mod_final <- lmer(`Low Abundance`~group+sex+sampling_age+(1|pedigreeID), mat_t3,REML=T)
+car::Anova(mod_final)
+r2(mod_final)
+```
+

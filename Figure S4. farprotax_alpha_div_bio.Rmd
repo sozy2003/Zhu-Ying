@@ -1,0 +1,125 @@
+---
+title: "alpha diversity of predicted functions"
+author: "Zhu Ying"
+date: "2023-06-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R packages
+```{r}
+rm(list=ls())
+if(!require(ggplot2))install.packages("ggplot2")
+library("ggplot2") 
+```
+
+## Input files
+```{r}
+design = read.table("metadata.txt", header=T, row.names= 1, sep="\t") 
+
+#group by skin, feather, oral, cloaca
+design$group <- design$tissue
+design$group[design$tissue%in%c("F", "G", "H", "I", "K", "L", "M")] <- "skin"
+design$group[design$tissue%in%c("D", "E", "FY", "N")] <- "feather"
+design$group[design$tissue=="B"] <- "oral"
+design$group[design$tissue=="C"] <- "cloaca"
+
+#subset
+design <- design[design$tissue_type!="environement",]
+
+
+# group by tissue+env
+design$tissue2 <- design$tissue
+design$tissue2[design$tissue%in%c("Chi", "Di", "Ni", "Qi")]<- "env"
+
+
+design$group2 <- design$group
+design$group2[design$tissue%in%c("F", "K", "L", "I")] <- "skin_feather"
+design$group2[design$tissue%in%c("G", "M", "H")] <- "skin_nonfeather"
+
+#alpha diversity
+alphadiv= read.table("faprotax_vegan_all.txt", header=T, row.names= 1, sep="\t")
+
+
+
+#cross check
+design <- design[rownames(design)%in%rownames(alphadiv),]
+dim(design)
+
+alphadiv = alphadiv[rownames(design), ]
+
+alpha = cbind(alphadiv, design)
+alpha$group <- factor(alpha$group,level=c("cloaca", "oral", "feather", "skin"))
+alpha$group2 <- factor(alpha$group2,level=c("cloaca", "oral", "feather", "skin_feather", "skin_nonfeather"))
+
+
+tissue_level <- c("cloaca", "oral", 
+                  "creast feather", "neck feather", "dorsal feather", "breast feather",
+                  "neck skin","dorsal skin", "breast skin", "skin of preen gland","head skin", "break", "leg and foot")
+alpha$tissue_explanation <- factor(alpha$tissue_explanation, level=tissue_level)
+
+```
+
+
+
+## Plots
+```{r}
+# Set ggplot2 drawing parameter.
+main_theme = theme(panel.background=element_blank(),
+                   panel.grid=element_blank(),
+                   axis.line.x=element_line(size=.5, colour="black"),
+                   axis.line.y=element_line(size=.5, colour="black"),
+                   axis.ticks=element_line(color="black"),
+                   axis.text=element_text(color="black", size=7),
+                   legend.position="right",
+                   legend.background=element_blank(),
+                   legend.key=element_blank(),
+                   legend.text= element_text(size=7),
+                   text=element_text(family="sans", size=7))
+
+# by group
+cl=c("#0099B499","#42B54099","#ED000099","#00468B99" )
+p=ggplot(alpha,aes(x=as.factor(group),y=shannon, color=group))+
+  geom_boxplot(alpha=1, outlier.size=0, size=0.7, width=0.5, fill="transparent")+
+  labs(x= NULL, y="Shannon") + 
+  # labs(x= "group", y="Shannon") + 
+  main_theme
+p=p+geom_jitter(position=position_jitter(0.17), size=1, alpha=0.7)
+p=p+theme(legend.position  ="none")+scale_color_manual(values =cl )
+p.group <- p
+p.group
+
+#by tissue
+
+p=ggplot(alpha,aes(x=as.factor(tissue_explanation),y=shannon, fill=group))+
+  geom_violin(alpha=0.5, trim=F)+
+  labs(x="Body sites", y="Shannon") + main_theme+
+  scale_fill_manual(values=cl)
+p=p+geom_jitter(position=position_jitter(0.17), size=0.5, 
+                alpha=0.3)
+p.tissue <- p
+p.tissue
+
+#Figure S4
+p.alpha.div <- p.tissue+
+  annotation_custom(grob = ggplotGrob(p.group),
+                    xmin=8,
+                    xmax=12,
+                    ymin=1.2,
+                    ymax=2.0) +
+  theme(axis.text.x = element_text(size=10,angle=45,
+                                   hjust=1, vjust=1), 
+        text=element_text(family="sans", size=12, face="bold"))
+p.alpha.div 
+
+
+
+
+
+```
+
+
+

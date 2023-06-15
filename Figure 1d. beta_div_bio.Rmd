@@ -1,0 +1,201 @@
+---
+title: "beta diversity of body-wide microbiome in crested ibis"
+author: "Zhu Ying"
+date: "2023-06-14"
+output:
+  html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load R packages
+
+
+```{r }
+rm(list=ls())
+options(warn = -1)
+library("ggplot2") 
+library(lme4)
+if(!require(lmerTest))install.packages("lmerTest")
+library(lmerTest)
+if(!require(sjstats))install.packages("sjstats")
+library(sjstats)
+
+```
+
+
+## Input files
+```{r}
+# Design of experiment
+design = read.table("metadata.txt", header=T, row.names= 1, sep="\t") 
+
+#group by skin, feather, oral, cloaca
+design$group <- design$tissue
+design$group[design$tissue%in%c("F", "G", "H", "I", "K", "L", "M")] <- "skin"
+design$group[design$tissue%in%c("D", "E", "FY", "N")] <- "feather"
+design$group[design$tissue=="B"] <- "oral"
+design$group[design$tissue=="C"] <- "cloaca"
+
+#subset 
+design <- design[design$tissue_type!="environement",]
+
+design$tissue2 <- design$tissue
+design$tissue2[design$tissue%in%c("Chi", "Di", "Ni", "Qi")]<- "env"
+
+design$group2 <- design$group
+design$group2[design$tissue%in%c("F", "K", "L", "I")] <- "skin_feather"
+design$group2[design$tissue%in%c("G", "M", "H")] <- "skin_nonfeather"
+
+# bray-curtis distances
+bray_curtis = read.table("bray_curtis.txt", sep="\t", header=T, check.names=F)
+rownames(bray_curtis)=bray_curtis$bray_curtis
+bray_curtis=bray_curtis[,-1]
+betadiv <- bray_curtis
+
+
+#cross check
+design <- design[rownames(design)%in%rownames(betadiv),]
+dim(design)
+
+betadiv = betadiv[rownames(design), rownames(design)]
+
+betadis=as.matrix(betadiv)
+
+betadis[upper.tri(betadis,diag = T)] <- NA  
+```
+
+## Pairwise comparision 
+```{r}
+
+tissue <- unique(sort(design$tissue))
+p=list() 
+for (i in tissue){
+  p[[i]] <- betadis[design$tissue==i, design$tissue==i]
+  nrow <- dim(p[[i]])[1]
+  ncol <- dim(p[[i]])[2]
+  row <- rep(rownames(p[[i]]), ncol)
+  col <- rep(colnames(p[[i]]),each=nrow)
+  p[[i]] <- data.frame(row, col, value=as.numeric(p[[i]]))
+  p[[i]]$tissue <- rep(i,nrow(p[[i]]))
+  
+}
+length(p)
+
+#combind all the data
+frame <- rbind(p[[1]],p[[2]],p[[3]],p[[4]],
+               p[[5]],p[[6]],p[[7]],p[[8]],
+               p[[9]],p[[10]],p[[11]],p[[12]],
+               p[[13]])
+
+#remove NA values
+frame <- na.omit(frame)
+
+
+frame$group <- frame$tissue
+frame$group[frame$tissue%in%c("F", "G", "H", "I", "K", "L", "M")] <- "skin"
+frame$group[frame$tissue%in%c("D", "E", "FY", "N")] <- "feather"
+frame$group[frame$tissue=="B"] <- "oral"
+frame$group[frame$tissue=="C"] <- "cloaca"
+frame$group <- factor(frame$group,level=c("cloaca", "oral", "feather", "skin"))
+
+
+frame$tissue_explanation <- frame$tissue
+frame$tissue_explanation[frame$tissue_explanation=="B"] <- "oral"
+frame$tissue_explanation[frame$tissue_explanation=="C"] <- "cloaca"
+frame$tissue_explanation[frame$tissue_explanation=="D"] <- "neck feather"
+frame$tissue_explanation[frame$tissue_explanation=="E"] <- "dorsal feather"
+frame$tissue_explanation[frame$tissue_explanation=="F"] <- "neck skin"
+frame$tissue_explanation[frame$tissue_explanation=="FY"] <- "breast feather"
+frame$tissue_explanation[frame$tissue_explanation=="G"] <- "break"
+frame$tissue_explanation[frame$tissue_explanation=="H"] <- "head skin"
+frame$tissue_explanation[frame$tissue_explanation=="I"] <- "skin of preen gland"
+frame$tissue_explanation[frame$tissue_explanation=="K"] <- "dorsal skin"
+frame$tissue_explanation[frame$tissue_explanation=="L"] <- "breast skin"
+frame$tissue_explanation[frame$tissue_explanation=="M"] <- "leg and foot"
+frame$tissue_explanation[frame$tissue_explanation=="N"] <- "creast feather"
+
+tissue_level <- c("cloaca", "oral", 
+                  "creast feather", "neck feather", "dorsal feather", "breast feather",
+                  "neck skin","dorsal skin", "breast skin", "skin of preen gland","head skin", "break", "leg and foot")
+frame$tissue_explanation <- factor(frame$tissue_explanation, level=tissue_level)
+
+design$name <- rownames(design)
+
+frame1 <- merge(frame,design[,c(1,6,8,34,35)], by.x = "row", by.y = "name" , all.x = T)
+
+frame2 <- merge(frame1,design[,c(1,35)], by.x = "col", by.y = "name" , all.x = T)
+frame <- frame2
+```
+
+
+
+## Plots
+```{r pressure, echo=FALSE}
+# Set ggplot2 drawing parameter.
+main_theme = theme(panel.background=element_blank(),
+                   panel.grid=element_blank(),
+                   axis.line.x=element_line(size=.5, colour="black"),
+                   axis.line.y=element_line(size=.5, colour="black"),
+                   axis.ticks=element_line(color="black"),
+                   axis.text=element_text(color="black", size=7),
+                   legend.position="right",
+                   legend.background=element_blank(),
+                   legend.key=element_blank(),
+                   legend.text= element_text(size=7),
+                   text=element_text(family="sans", size=7))
+
+
+cl=c("#0099B499","#42B54099","#ED000099","#00468B99" )
+
+#by group
+p=ggplot(frame,aes(x=as.factor(group),y=value, color=group))+
+  geom_boxplot()+
+  # geom_boxplot(alpha=1, outlier.size=0, size=0.7, width=0.5, fill="transparent")+
+  
+  labs(x=NULL, y="bray_curtis") +
+  main_theme
+p=p+geom_jitter(position=position_jitter(0.17), size=0.001, alpha=0.3)
+p=p+theme(legend.position  ="none")+scale_color_manual(values =cl )
+p.group <- p
+p.group
+
+#  by tissue
+p=ggplot(frame,aes(x=as.factor(tissue_explanation),y=value, fill=group))+
+  geom_violin(alpha=0.5, trim=F)+
+  labs(x="Body Sites", y="bray_curtis") + main_theme
+p=p+geom_jitter(position=position_jitter(0.17), size=0.001, alpha=0.3)
+p=p+theme(axis.text=element_text(angle=45,vjust=1, hjust=1))+scale_fill_manual(values =cl )
+p.tissue <- p
+p.tissue
+
+#Figure 1d
+p.beta.div <- p.tissue+
+  annotation_custom(grob = ggplotGrob(p.group),
+                    xmin=3,
+                    xmax=7,
+                    ymin=0.95,
+                    ymax=1.25) +
+  theme(axis.text.x = element_text(size=10,angle=45,
+                                   hjust=1, vjust=1), 
+        text=element_text(family="sans", size=12, face="bold"))
+p.beta.div
+
+
+```
+
+
+## Linear mixed models
+```{r}
+# Table S2
+mod_final <- lmer(value~group+sex+sampling_age+(1|pedigreeID.x), frame, REML=T)
+summary(mod_final)
+
+car::Anova(mod_final)
+
+library(performance)
+r2(mod_final)
+```
+
+

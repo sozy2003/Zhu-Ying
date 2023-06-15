@@ -1,0 +1,219 @@
+---
+title: "predicted functions based on faprotax database"
+author: "Zhu Ying"
+date: "2023-06-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R packages
+
+
+```{r}
+rm(list=ls())
+options(warn=-1)
+library("reshape2", quietly=T, warn.conflicts=F)
+library(lme4,quietly=T, warn.conflicts=F)
+library(performance,quietly=T, warn.conflicts=F)
+library(ggplot2,quietly=T, warn.conflicts=F)
+library(dplyr,quietly=T, warn.conflicts=F)
+library(tidyr,quietly=T, warn.conflicts=F)
+library(ggalluvial,quietly=T, warn.conflicts=F)
+```
+
+
+## Input files
+```{r}
+design = read.table("metadata.txt", header=T, row.names= 1, sep="\t") 
+
+#group by skin, feather, oral, cloaca
+design$group <- design$tissue
+design$group[design$tissue%in%c("F", "G", "H", "I", "K", "L", "M")] <- "skin"
+design$group[design$tissue%in%c("D", "E", "FY", "N")] <- "feather"
+design$group[design$tissue=="B"] <- "oral"
+design$group[design$tissue=="C"] <- "cloaca"
+
+
+design <- design[design$tissue_type!="environement",]
+
+design$group2 <- design$group
+design$group2[design$tissue%in%c("F", "K", "L", "I")] <- "skin_feather"
+design$group2[design$tissue%in%c("G", "M", "H")] <- "skin_nonfeather"
+
+
+farprotax= read.table("faprotax.txt", header=T, row.names= 1, sep="\t")
+
+tax_count_sum <- farprotax[,colnames(farprotax)%in%rownames(design)]
+
+
+# normalization to total 100 
+per <-  t(t(tax_count_sum)/colSums(tax_count_sum,na=T)) * 100 
+
+
+```
+
+## statistics
+```{r}
+table(apply(per,1,mean)>1)
+
+per <- per[(order(-rowSums(per))), ]
+per.sub <- per[rownames(per)[apply(per,1,mean)>1],]
+
+mat_t4 <-  merge(design[c("pedigreeID", "tissue", 
+                          "tissue_explanation", "group","group2", "sex", "sampling_age")], t(per.sub), by="row.names")
+
+
+rownames(mat_t4) <- mat_t4$Row.names
+mat_t4 <- mat_t4[,-1]
+
+
+vars=colnames(mat_t4)[8:length(colnames(mat_t4))]
+result3=c()
+for (i   in    1:length(vars)) {
+  fit=lmer(mat_t4[,vars[i]]~group+sex+sampling_age+(1|pedigreeID),data=mat_t4,REML=T) 
+  temp=car::Anova(fit)
+  r=r2(fit)
+  result3=rbind(result3,c(vars[i],temp$Chisq,temp$Df, temp$`Pr(>Chisq)`, r$R2_conditional,r$R2_marginal))
+  
+}
+
+result3 <- as.data.frame(result3)
+
+
+result3$group.fdr <- p.adjust(result3[,8], "BH")
+result3$sex.fdr <- p.adjust(result3[,9], "BH")
+result3$sampling_age.fdr <- p.adjust(result3[,10], "BH")
+result3$sig <- result3$group.fdr
+
+
+result3$sig[result3$sig< 0.05] <- "sig"
+result3$sig[result3$sig!="sig"] <- "nonsig"
+table(result3$sig)  
+
+
+colnames(result3)[1:10] <- c("predicted_functions", 
+                       "Chisq_group", "Chisq_sex", "Chisq_bird age",
+                       "df_group", "df_sex", "df_age",
+                       "p_group", "p_sex", "p_age"
+                       )
+result3 #Table S4
+
+
+
+```
+
+
+
+
+
+## bar plot
+```{r , echo=FALSE}
+main_theme = theme(panel.background=element_blank(),
+                   panel.grid=element_blank(),
+                   axis.line.x=element_line(size=.5, colour="black"),
+                   axis.line.y=element_line(size=.5, colour="black"),
+                   axis.ticks=element_line(color="black"),
+                   axis.text=element_text(color="black", size=7),
+                   legend.position="right",
+                   legend.background=element_blank(),
+                   legend.key=element_blank(),
+                   legend.text= element_text(size=7),
+                   text=element_text(family="sans", size=7))
+
+
+per.t <- t(per)
+lis <- result3$predicted_functions
+
+
+abun.bar <- per.t[,lis]
+
+
+
+abun.bar <-  merge(design["group"], abun.bar, by="row.names")
+
+
+rownames(abun.bar) <- abun.bar$Row.names
+abun.bar <- abun.bar[,-1]
+
+
+abun.bar <- abun.bar %>%
+  gather(variable, value, -group)%>%
+  group_by(variable, group)%>%
+  summarise(mean=mean(value))
+
+abun.bar$group <- factor(abun.bar$group,level=c("cloaca", "oral", "feather", "skin"))
+
+p1 <- ggplot(abun.bar, aes(variable, mean, fill=group))+
+  geom_bar(stat = "identity", position="dodge", width = 0.6,  alpha=0.5)+
+  scale_x_discrete(limits=lis)+
+  coord_flip()+
+  xlab('')+
+  ylab('Mean proportion of predicted function (%)')+main_theme
+cl=c("#0099B499","#42B54099","#ED000099","#00468B99" )
+p1 <- p1+scale_fill_manual(values =cl)
+p.fun.dif <- p1
+p.fun.dif #Figure 2d
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+
+
+## relative abundance of top 20 functions.
+```{r}
+mean_sort <- per[(order(-rowSums(per))), ] # decrease sort
+
+
+# top20
+mean_sort<-as.data.frame(mean_sort)
+other <- colSums(mean_sort[21:dim(mean_sort)[1], ])
+mean_sort <- mean_sort[1:(21-1), ]
+mean_sort <- rbind(mean_sort,other)
+rownames(mean_sort)[21] <- c("Low Abundance")
+
+
+topN<-rownames(mean_sort)
+
+mean_sort <- mean_sort[,rownames(design)]
+
+
+# plot for each group. 
+mat <-  mean_sort[,1:(dim(mean_sort)[2]-1)] #去除最后一列
+
+mat_t <-  t(mat)
+
+mat_t2 <-  merge(design[c("group")], mat_t, by="row.names")
+
+rownames(mat_t2) <- mat_t2$Row.names
+mat_t2 <-  mat_t2[,-1]
+
+mat_mean <-  aggregate(mat_t2[,-1], by=mat_t2[1], FUN=mean) # mean by group
+mat_mean_final <-  do.call(rbind, mat_mean)[-1,]
+
+geno <-  mat_mean$group
+colnames(mat_mean_final) <-  geno
+
+mat_mean_final <-  as.data.frame(mat_mean_final)
+
+mat_mean_final$fun <-  rownames(mat_mean_final)
+
+
+data_all <-  as.data.frame(melt(mat_mean_final, id.vars=c("fun")))
+data_all$variable <- factor(data_all$variable,level=c("cloaca", "oral", "feather", "skin"))
+
+p = ggplot(data = data_all, 
+           aes(x = variable, y = as.numeric(value), alluvium = fun, stratum=fun)) +
+  geom_alluvium(aes(fill = fun), alpha = 0.75) +
+  geom_stratum(aes(fill=fun))+
+  labs(x="Habitat type", y="Relative Abundance (%)")+
+  main_theme 
+tax.alluvium=p
+tax.alluvium  #Figure S3
+
+
+
+```
+

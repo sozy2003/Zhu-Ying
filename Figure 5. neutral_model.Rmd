@@ -1,0 +1,1763 @@
+---
+title: "neutral community models"
+author: "Zhu Ying"
+date: "2023-06-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R packages
+
+```{r}
+library(Hmisc)
+library(minpack.lm)
+library(stats4)
+library(vegan)
+if(!require(reshape2))install.packages("reshape2")
+library(reshape2)
+```
+
+
+
+## Input files 
+```{r}
+design = read.table("metadata.txt", header=T, row.names= 1, sep="\t") 
+
+#group by skin, feather, oral, cloaca
+design$group <- design$tissue
+design$group[design$tissue%in%c("F", "G", "H", "I", "K", "L", "M")] <- "skin"
+design$group[design$tissue%in%c("D", "E", "FY", "N")] <- "feather"
+design$group[design$tissue=="B"] <- "oral"
+design$group[design$tissue=="C"] <- "cloaca"
+
+design <- design[design$tissue_type!="environement",]
+
+design$group2 <- design$group
+design$group2[design$tissue%in%c("F", "K", "L", "I")] <- "skin_feather"
+design$group2[design$tissue%in%c("G", "M", "H")] <- "skin_nonfeather"
+```
+
+## neutral community models for cloaca samples
+
+```{r}
+set.seed(0)
+
+otu_table <-  read.delim("otu_table.txt", row.names= 1,  header=T, sep="\t")
+otu_table <- otu_table[,design$group=="cloaca"]
+spp= as.data.frame(t(rrarefy(t(otu_table), min(colSums(otu_table)))))
+
+colSums(spp)
+
+spp <- t(spp)
+
+N <- mean(apply(spp, 1, sum))
+p.m <- apply(spp, 2, mean) 
+p.m <- p.m[p.m != 0]
+p <- p.m/N    
+spp.bi <- 1*(spp>0)
+freq <- apply(spp.bi, 2, mean)
+freq <- freq[freq != 0]
+C <- merge(p, freq, by=0)
+C <- C[order(C[,2]),]
+C <- as.data.frame(C)
+C.0 <- C[!(apply(C, 1, function(y) any(y == 0))),]
+p <- C.0[,2]
+freq <- C.0[,3]
+names(p) <- C.0[,1]
+names(freq) <- C.0[,1]
+d = 1/N
+##Fit model parameter m (or Nm) using Non-linear least squares (NLS)
+m.fit <- nlsLM(freq ~ pbeta(d, N*m*p, N*m*(1 -p), lower.tail=FALSE),start=list(m=0.1))
+m.fit #get the m value
+m.ci <- confint(m.fit, 'm', level=0.95)
+freq.pred <- pbeta(d, N*coef(m.fit)*p, N*coef(m.fit)*(1 -p), lower.tail=FALSE)
+pred.ci <- binconf(freq.pred*nrow(spp), nrow(spp), alpha=0.05, method="wilson", return.df=TRUE)
+Rsqr <- 1 - (sum((freq - freq.pred)^2))/(sum((freq - mean(freq))^2))
+Rsqr# get the R2 value
+
+
+bacnlsALL <-data.frame(p,freq,freq.pred,pred.ci[,2:3])
+inter.col<-rep('black',nrow(bacnlsALL))
+inter.col[bacnlsALL$freq <= bacnlsALL$Lower]<-'#A52A2A'#define the color of below points
+inter.col[bacnlsALL$freq >= bacnlsALL$Upper]<-'#29A6A6'#define the color of up points
+
+main_theme <-  theme(panel.background=element_blank(),
+                     panel.grid=element_blank(),
+                     axis.line.x=element_line(size=.5, colour="black"),
+                     axis.line.y=element_line(size=.5, colour="black"),
+                     axis.ticks=element_line(color="black"),
+                     axis.text=element_text(color="black", size=7),
+                     legend.position="right",
+                     legend.background=element_blank(),
+                     legend.key=element_blank(),
+                     legend.text= element_text(size=7),
+                     text=element_text(family="sans", size=7))
+
+
+neutral_model_cloaca <- ggplot(bacnlsALL,aes(x=log10(p), y=freq))+
+  geom_point(aes(color=inter.col),alpha=0.5)+
+  geom_line(aes(x=log10(p), y=freq.pred), lwd=0.8)+
+  geom_line(aes(x=log10(p), y=Lower), lwd=0.8,lty=2, color="blue")+
+  geom_line(aes(x=log10(p), y=Upper), lwd=0.8,lty=2, color="blue")+
+  scale_color_manual(values = c("red","blue", "black"))+main_theme
+
+
+neutral_model_cloaca <- neutral_model_cloaca + annotate("text",x=-5.5,y=0.85, 
+                                          label= paste("R^2=",round(Rsqr,3)))+
+  annotate("text",x=-5.5,y=0.80, 
+           label= paste("Nm=",round(coef(m.fit)*N)))+
+  xlab("log (Mean relative abundance)")+
+  ylab("Occurrence frequency")+
+  scale_color_manual(values=c("#E64B357F","#3C54887F","#91D1C27F" ))
+    
+neutral_model_cloaca 
+
+# partion by above, below and middle 
+above.list <- rownames(bacnlsALL)[bacnlsALL$freq >= bacnlsALL$Upper]
+below.list <- rownames(bacnlsALL)[bacnlsALL$freq <= bacnlsALL$Lower]
+middle.list <- rownames(bacnlsALL)[bacnlsALL$freq < bacnlsALL$Upper&bacnlsALL$freq > bacnlsALL$Lower]
+
+
+design.sub <- design[design$group=="cloaca",]
+mat <- otu_table[,rownames(design.sub)]
+
+mat_t <-  t(mat)
+
+
+
+mat_t1 <- as.data.frame(t(mat_t))
+mat_t1$above <- rowSums(mat_t1)
+mat_t1$below <- rowSums(mat_t1)
+mat_t1$middle <- rowSums(mat_t1)
+
+mat_t1$above[!rownames(mat_t1)%in%above.list] <- 0
+mat_t1$below [!rownames(mat_t1)%in%below.list]<- 0
+mat_t1$middle[!rownames(mat_t1)%in%middle.list] <- 0
+
+mat_t1[,c("above", "below", "middle")][1:6,]
+
+cloaca.partion <- t(mat_t1[,c("above", "below", "middle")])
+
+name <- "cloaca"
+rownames(cloaca.partion) <- paste(name,rownames(cloaca.partion), sep=".")
+cloaca.partion[1:3,1:20]
+
+```
+
+## oral
+```{r}
+set.seed(0)
+otu_table <-  read.delim("otu_table.txt", row.names= 1,  header=T, sep="\t")
+otu_table <- otu_table[,design$group=="oral"]
+spp= as.data.frame(t(rrarefy(t(otu_table), min(colSums(otu_table)))))
+
+spp <- t(spp)
+N <- mean(apply(spp, 1, sum))
+p.m <- apply(spp, 2, mean) 
+p.m <- p.m[p.m != 0]
+p <- p.m/N    
+spp.bi <- 1*(spp>0) 
+freq <- apply(spp.bi, 2, mean)
+freq <- freq[freq != 0]
+C <- merge(p, freq, by=0)
+C <- C[order(C[,2]),]
+C <- as.data.frame(C)
+C.0 <- C[!(apply(C, 1, function(y) any(y == 0))),]
+p <- C.0[,2]
+freq <- C.0[,3]
+names(p) <- C.0[,1]
+names(freq) <- C.0[,1]
+d = 1/N
+##Fit model parameter m (or Nm) using Non-linear least squares (NLS)
+m.fit <- nlsLM(freq ~ pbeta(d, N*m*p, N*m*(1 -p), lower.tail=FALSE),start=list(m=0.1))
+m.fit #get the m value
+m.ci <- confint(m.fit, 'm', level=0.95)
+freq.pred <- pbeta(d, N*coef(m.fit)*p, N*coef(m.fit)*(1 -p), lower.tail=FALSE)
+pred.ci <- binconf(freq.pred*nrow(spp), nrow(spp), alpha=0.05, method="wilson", return.df=TRUE)
+Rsqr <- 1 - (sum((freq - freq.pred)^2))/(sum((freq - mean(freq))^2))
+Rsqr# get the R2 value
+
+
+#Drawing the figure using grid package:
+#p is the mean relative abundance
+#freq is occurrence frequency
+#freq.pred is predicted occurrence frequency
+bacnlsALL <-data.frame(p,freq,freq.pred,pred.ci[,2:3])
+inter.col<-rep('black',nrow(bacnlsALL))
+inter.col[bacnlsALL$freq <= bacnlsALL$Lower]<-'#A52A2A'#define the color of below points
+inter.col[bacnlsALL$freq >= bacnlsALL$Upper]<-'#29A6A6'#define the color of up points
+
+
+neutral_model_oral <- ggplot(bacnlsALL,aes(x=log10(p), y=freq))+
+  geom_point(aes(color=inter.col),alpha=0.5)+
+  geom_line(aes(x=log10(p), y=freq.pred), lwd=0.8)+
+  geom_line(aes(x=log10(p), y=Lower), lwd=0.8,lty=2, color="blue")+
+  geom_line(aes(x=log10(p), y=Upper), lwd=0.8,lty=2, color="blue")+
+  scale_color_manual(values = c("red","blue", "black"))+main_theme
+
+
+neutral_model_oral <- neutral_model_oral + annotate("text",x=-5.5,y=0.85, 
+                                          label= paste("R^2=",round(Rsqr,3)))+
+  annotate("text",x=-5.5,y=0.80, 
+           label= paste("Nm=",round(coef(m.fit)*N)))+
+  xlab("log (Mean relative abundance)")+
+  ylab("Occurrence frequency")+
+  scale_color_manual(values=c("#E64B357F","#3C54887F","#91D1C27F" ))
+
+neutral_model_oral 
+
+
+# partion by above, below and middle 
+above.list <- rownames(bacnlsALL)[bacnlsALL$freq >= bacnlsALL$Upper]
+below.list <- rownames(bacnlsALL)[bacnlsALL$freq <= bacnlsALL$Lower]
+middle.list <- rownames(bacnlsALL)[bacnlsALL$freq < bacnlsALL$Upper&bacnlsALL$freq > bacnlsALL$Lower]
+
+
+design.sub <- design[design$group=="oral",]
+mat <- otu_table[,rownames(design.sub)]
+
+mat_t <-  t(mat)
+mat_t[1:6,1:6]
+
+
+mat_t1 <- as.data.frame(t(mat_t))
+mat_t1$above <- rowSums(mat_t1)
+mat_t1$below <- rowSums(mat_t1)
+mat_t1$middle <- rowSums(mat_t1)
+
+mat_t1$above[!rownames(mat_t1)%in%above.list] <- 0
+mat_t1$below [!rownames(mat_t1)%in%below.list]<- 0
+mat_t1$middle[!rownames(mat_t1)%in%middle.list] <- 0
+
+mat_t1[,c("above", "below", "middle")][1:6,]
+
+oral.partion <- t(mat_t1[,c("above", "below", "middle")])
+
+name <- "oral"
+rownames(oral.partion) <- paste(name,rownames(oral.partion), sep=".")
+oral.partion[1:3,1:20]
+
+
+```
+
+
+
+## feather
+```{r}
+set.seed(0)
+
+otu_table <-  read.delim("otu_table.txt", row.names= 1,  header=T, sep="\t")
+otu_table <- otu_table[,design$group=="feather"]
+spp= as.data.frame(t(rrarefy(t(otu_table), min(colSums(otu_table)))))
+
+colSums(spp)
+
+spp <- t(spp)
+
+N <- mean(apply(spp, 1, sum))
+p.m <- apply(spp, 2, mean)
+p.m <- p.m[p.m != 0]
+p <- p.m/N    
+spp.bi <- 1*(spp>0) 
+freq <- apply(spp.bi, 2, mean)
+freq <- freq[freq != 0]
+C <- merge(p, freq, by=0)
+C <- C[order(C[,2]),]
+C <- as.data.frame(C)
+C.0 <- C[!(apply(C, 1, function(y) any(y == 0))),]
+p <- C.0[,2]
+freq <- C.0[,3]
+names(p) <- C.0[,1]
+names(freq) <- C.0[,1]
+d = 1/N
+##Fit model parameter m (or Nm) using Non-linear least squares (NLS)
+m.fit <- nlsLM(freq ~ pbeta(d, N*m*p, N*m*(1 -p), lower.tail=FALSE),start=list(m=0.1))
+m.fit #get the m value
+m.ci <- confint(m.fit, 'm', level=0.95)
+freq.pred <- pbeta(d, N*coef(m.fit)*p, N*coef(m.fit)*(1 -p), lower.tail=FALSE)
+pred.ci <- binconf(freq.pred*nrow(spp), nrow(spp), alpha=0.05, method="wilson", return.df=TRUE)
+Rsqr <- 1 - (sum((freq - freq.pred)^2))/(sum((freq - mean(freq))^2))
+Rsqr# get the R2 value
+
+
+#Drawing the figure using grid package:
+#p is the mean relative abundance
+#freq is occurrence frequency
+#freq.pred is predicted occurrence frequency
+bacnlsALL <-data.frame(p,freq,freq.pred,pred.ci[,2:3])
+inter.col<-rep('black',nrow(bacnlsALL))
+inter.col[bacnlsALL$freq <= bacnlsALL$Lower]<-'#A52A2A'#define the color of below points
+inter.col[bacnlsALL$freq >= bacnlsALL$Upper]<-'#29A6A6'#define the color of up points
+
+
+neutral_model_feather <- ggplot(bacnlsALL,aes(x=log10(p), y=freq))+
+  geom_point(aes(color=inter.col),alpha=0.5)+
+  geom_line(aes(x=log10(p), y=freq.pred), lwd=0.8)+
+  geom_line(aes(x=log10(p), y=Lower), lwd=0.8,lty=2, color="blue")+
+  geom_line(aes(x=log10(p), y=Upper), lwd=0.8,lty=2, color="blue")+
+  scale_color_manual(values = c("red","blue", "black"))+main_theme
+
+
+neutral_model_feather <- neutral_model_feather + annotate("text",x=-6,y=0.85, 
+                                          label= paste("R^2=",round(Rsqr,3)))+
+  annotate("text",x=-6,y=0.80, 
+           label= paste("Nm=",round(coef(m.fit)*N)))+
+  xlab("log (Mean relative abundance)")+
+  ylab("Occurrence frequency")+
+  scale_color_manual(values=c("#E64B357F","#3C54887F","#91D1C27F" ))
+
+neutral_model_feather         
+
+
+# partion by above, below and middle 
+above.list <- rownames(bacnlsALL)[bacnlsALL$freq >= bacnlsALL$Upper]
+below.list <- rownames(bacnlsALL)[bacnlsALL$freq <= bacnlsALL$Lower]
+middle.list <- rownames(bacnlsALL)[bacnlsALL$freq < bacnlsALL$Upper&bacnlsALL$freq > bacnlsALL$Lower]
+
+
+design.sub <- design[design$group=="feather",]
+mat <- otu_table[,rownames(design.sub)]
+
+mat_t <-  t(mat)
+
+
+ 
+mat_t1 <- as.data.frame(t(mat_t))
+mat_t1$above <- rowSums(mat_t1)
+mat_t1$below <- rowSums(mat_t1)
+mat_t1$middle <- rowSums(mat_t1)
+
+mat_t1$above[!rownames(mat_t1)%in%above.list] <- 0
+mat_t1$below [!rownames(mat_t1)%in%below.list]<- 0
+mat_t1$middle[!rownames(mat_t1)%in%middle.list] <- 0
+
+mat_t1[,c("above", "below", "middle")][1:6,]
+
+feather.partion <- t(mat_t1[,c("above", "below", "middle")])
+
+name <- "feather"
+rownames(feather.partion) <- paste(name,rownames(feather.partion), sep=".")
+feather.partion[1:3,1:20]
+```
+
+
+
+
+## skin
+```{r}
+set.seed(0)
+otu_table <-  read.delim("otu_table.txt", row.names= 1,  header=T, sep="\t")
+otu_table <- otu_table[,design$group=="skin"]
+spp= as.data.frame(t(rrarefy(t(otu_table), min(colSums(otu_table)))))
+spp[1:6,1:6]
+colSums(spp)
+
+spp <- t(spp)
+
+
+N <- mean(apply(spp, 1, sum))
+p.m <- apply(spp, 2, mean) 
+p.m <- p.m[p.m != 0]
+p <- p.m/N    
+spp.bi <- 1*(spp>0) 
+freq <- apply(spp.bi, 2, mean)
+freq <- freq[freq != 0]
+C <- merge(p, freq, by=0)
+C <- C[order(C[,2]),]
+C <- as.data.frame(C)
+C.0 <- C[!(apply(C, 1, function(y) any(y == 0))),]
+p <- C.0[,2]
+freq <- C.0[,3]
+names(p) <- C.0[,1]
+names(freq) <- C.0[,1]
+d = 1/N
+##Fit model parameter m (or Nm) using Non-linear least squares (NLS)
+m.fit <- nlsLM(freq ~ pbeta(d, N*m*p, N*m*(1 -p), lower.tail=FALSE),start=list(m=0.1))
+m.fit #get the m value
+m.ci <- confint(m.fit, 'm', level=0.95)
+freq.pred <- pbeta(d, N*coef(m.fit)*p, N*coef(m.fit)*(1 -p), lower.tail=FALSE)
+pred.ci <- binconf(freq.pred*nrow(spp), nrow(spp), alpha=0.05, method="wilson", return.df=TRUE)
+Rsqr <- 1 - (sum((freq - freq.pred)^2))/(sum((freq - mean(freq))^2))
+Rsqr# get the R2 value
+
+
+#Drawing the figure using grid package:
+#p is the mean relative abundance
+#freq is occurrence frequency
+#freq.pred is predicted occurrence frequency
+bacnlsALL <-data.frame(p,freq,freq.pred,pred.ci[,2:3])
+inter.col<-rep('black',nrow(bacnlsALL))
+inter.col[bacnlsALL$freq <= bacnlsALL$Lower]<-'#A52A2A'#define the color of below points
+inter.col[bacnlsALL$freq >= bacnlsALL$Upper]<-'#29A6A6'#define the color of up points
+
+
+neutral_model_skin <- ggplot(bacnlsALL,aes(x=log10(p), y=freq))+
+  geom_point(aes(color=inter.col),alpha=0.5)+
+  geom_line(aes(x=log10(p), y=freq.pred), lwd=0.8)+
+  geom_line(aes(x=log10(p), y=Lower), lwd=0.8,lty=2, color="blue")+
+  geom_line(aes(x=log10(p), y=Upper), lwd=0.8,lty=2, color="blue")+
+  scale_color_manual(values = c("red","blue", "black"))+main_theme
+
+
+neutral_model_skin <- neutral_model_skin + annotate("text",x=-6,y=0.85, 
+                                          label= paste("R^2=",round(Rsqr,3)))+
+  annotate("text",x=-6,y=0.80, 
+           label= paste("Nm=",round(coef(m.fit)*N)))+
+  xlab("log (Mean relative abundance)")+
+  ylab("Occurrence frequency")+
+  scale_color_manual(values=c("#E64B357F","#3C54887F","#91D1C27F" ))
+
+neutral_model_skin          
+
+# partion by above, below and middle 
+above.list <- rownames(bacnlsALL)[bacnlsALL$freq >= bacnlsALL$Upper]
+below.list <- rownames(bacnlsALL)[bacnlsALL$freq <= bacnlsALL$Lower]
+middle.list <- rownames(bacnlsALL)[bacnlsALL$freq < bacnlsALL$Upper&bacnlsALL$freq > bacnlsALL$Lower]
+
+
+design.sub <- design[design$group=="skin",]
+mat <- otu_table[,rownames(design.sub)]
+
+mat_t <-  t(mat)
+mat_t[1:6,1:6]
+
+
+mat_t1 <- as.data.frame(t(mat_t))
+mat_t1$above <- rowSums(mat_t1)
+mat_t1$below <- rowSums(mat_t1)
+mat_t1$middle <- rowSums(mat_t1)
+
+mat_t1$above[!rownames(mat_t1)%in%above.list] <- 0
+mat_t1$below [!rownames(mat_t1)%in%below.list]<- 0
+mat_t1$middle[!rownames(mat_t1)%in%middle.list] <- 0
+
+mat_t1[,c("above", "below", "middle")][1:6,]
+
+skin.partion <- t(mat_t1[,c("above", "below", "middle")])
+
+name <- "skin"
+rownames(skin.partion) <- paste(name,rownames(skin.partion), sep=".")
+skin.partion[1:3,1:20]
+
+```
+## neck feather
+```{r}
+set.seed(0)
+
+otu_table <-  read.delim("otu_table.txt", row.names= 1,  header=T, sep="\t")
+otu_table <- otu_table[,design$tissue_explanation=="neck feather"]
+spp= as.data.frame(t(rrarefy(t(otu_table), min(colSums(otu_table)))))
+
+spp <- t(spp)
+
+N <- mean(apply(spp, 1, sum))
+p.m <- apply(spp, 2, mean) 
+p.m <- p.m[p.m != 0]
+p <- p.m/N    
+spp.bi <- 1*(spp>0) 
+freq <- apply(spp.bi, 2, mean)
+freq <- freq[freq != 0]
+C <- merge(p, freq, by=0)
+C <- C[order(C[,2]),]
+C <- as.data.frame(C)
+C.0 <- C[!(apply(C, 1, function(y) any(y == 0))),]
+p <- C.0[,2]
+freq <- C.0[,3]
+names(p) <- C.0[,1]
+names(freq) <- C.0[,1]
+d = 1/N
+##Fit model parameter m (or Nm) using Non-linear least squares (NLS)
+m.fit <- nlsLM(freq ~ pbeta(d, N*m*p, N*m*(1 -p), lower.tail=FALSE),start=list(m=0.1))
+m.fit #get the m value
+m.ci <- confint(m.fit, 'm', level=0.95)
+freq.pred <- pbeta(d, N*coef(m.fit)*p, N*coef(m.fit)*(1 -p), lower.tail=FALSE)
+pred.ci <- binconf(freq.pred*nrow(spp), nrow(spp), alpha=0.05, method="wilson", return.df=TRUE)
+Rsqr <- 1 - (sum((freq - freq.pred)^2))/(sum((freq - mean(freq))^2))
+Rsqr# get the R2 value
+
+
+#Drawing the figure using grid package:
+#p is the mean relative abundance
+#freq is occurrence frequency
+#freq.pred is predicted occurrence frequency
+bacnlsALL <-data.frame(p,freq,freq.pred,pred.ci[,2:3])
+inter.col<-rep('black',nrow(bacnlsALL))
+inter.col[bacnlsALL$freq <= bacnlsALL$Lower]<-'#A52A2A'#define the color of below points
+inter.col[bacnlsALL$freq >= bacnlsALL$Upper]<-'#29A6A6'#define the color of up points
+
+
+neutral_model_neck_feather <- ggplot(bacnlsALL,aes(x=log10(p), y=freq))+
+  geom_point(aes(color=inter.col),alpha=0.5)+
+  geom_line(aes(x=log10(p), y=freq.pred), lwd=0.8)+
+  geom_line(aes(x=log10(p), y=Lower), lwd=0.8,lty=2, color="blue")+
+  geom_line(aes(x=log10(p), y=Upper), lwd=0.8,lty=2, color="blue")+
+  scale_color_manual(values = c("red","blue", "black"))+main_theme
+
+
+neutral_model_neck_feather <- neutral_model_neck_feather + annotate("text",x=-5.3,y=0.85, 
+                                                                          label= paste("R^2=",round(Rsqr,3)))+
+  annotate("text",x=-5.3,y=0.80, 
+           label= paste("Nm=",round(coef(m.fit)*N)))+
+  xlab("log (Mean relative abundance)")+
+  ylab("Occurrence frequency")+
+  scale_color_manual(values=c("#E64B357F","#3C54887F","#91D1C27F" ))
+
+neutral_model_neck_feather 
+
+
+# partion by above, below and middle 
+above.list <- rownames(bacnlsALL)[bacnlsALL$freq >= bacnlsALL$Upper]
+below.list <- rownames(bacnlsALL)[bacnlsALL$freq <= bacnlsALL$Lower]
+middle.list <- rownames(bacnlsALL)[bacnlsALL$freq < bacnlsALL$Upper&bacnlsALL$freq > bacnlsALL$Lower]
+
+
+design.sub <- design[design$tissue_explanation=="neck feather",]
+mat <- otu_table[,rownames(design.sub)]
+
+mat_t <-  t(mat)
+mat_t[1:6,1:6]
+
+
+mat_t1 <- as.data.frame(t(mat_t))
+mat_t1$above <- rowSums(mat_t1)
+mat_t1$below <- rowSums(mat_t1)
+mat_t1$middle <- rowSums(mat_t1)
+
+mat_t1$above[!rownames(mat_t1)%in%above.list] <- 0
+mat_t1$below [!rownames(mat_t1)%in%below.list]<- 0
+mat_t1$middle[!rownames(mat_t1)%in%middle.list] <- 0
+
+mat_t1[,c("above", "below", "middle")][1:6,]
+
+neck_feather.partion <- t(mat_t1[,c("above", "below", "middle")])
+
+name <- "neck_feather"
+rownames(neck_feather.partion) <- paste(name,rownames(neck_feather.partion), sep=".")
+neck_feather.partion[1:3,1:20]
+```
+
+## dorsal feather
+```{r}
+set.seed(0)
+library(vegan)
+otu_table <-  read.delim("otu_table.txt", row.names= 1,  header=T, sep="\t")
+otu_table <- otu_table[,design$tissue_explanation=="dorsal feather"]
+spp= as.data.frame(t(rrarefy(t(otu_table), min(colSums(otu_table)))))
+spp[1:6,1:6]
+colSums(spp)
+
+spp <- t(spp)
+spp[1:6,1:6]
+
+N <- mean(apply(spp, 1, sum))
+p.m <- apply(spp, 2, mean) 
+p.m <- p.m[p.m != 0]
+p <- p.m/N   
+spp.bi <- 1*(spp>0) 
+freq <- apply(spp.bi, 2, mean)
+freq <- freq[freq != 0]
+C <- merge(p, freq, by=0)
+C <- C[order(C[,2]),]
+C <- as.data.frame(C)
+C.0 <- C[!(apply(C, 1, function(y) any(y == 0))),]
+p <- C.0[,2]
+freq <- C.0[,3]
+names(p) <- C.0[,1]
+names(freq) <- C.0[,1]
+d = 1/N
+##Fit model parameter m (or Nm) using Non-linear least squares (NLS)
+m.fit <- nlsLM(freq ~ pbeta(d, N*m*p, N*m*(1 -p), lower.tail=FALSE),start=list(m=0.1))
+m.fit #get the m value
+m.ci <- confint(m.fit, 'm', level=0.95)
+freq.pred <- pbeta(d, N*coef(m.fit)*p, N*coef(m.fit)*(1 -p), lower.tail=FALSE)
+pred.ci <- binconf(freq.pred*nrow(spp), nrow(spp), alpha=0.05, method="wilson", return.df=TRUE)
+Rsqr <- 1 - (sum((freq - freq.pred)^2))/(sum((freq - mean(freq))^2))
+Rsqr# get the R2 value
+
+#Drawing the figure using grid package:
+#p is the mean relative abundance
+#freq is occurrence frequency
+#freq.pred is predicted occurrence frequency
+bacnlsALL <-data.frame(p,freq,freq.pred,pred.ci[,2:3])
+inter.col<-rep('black',nrow(bacnlsALL))
+inter.col[bacnlsALL$freq <= bacnlsALL$Lower]<-'#A52A2A'#define the color of below points
+inter.col[bacnlsALL$freq >= bacnlsALL$Upper]<-'#29A6A6'#define the color of up points
+
+
+neutral_model_dorsal_feather <- ggplot(bacnlsALL,aes(x=log10(p), y=freq))+
+  geom_point(aes(color=inter.col),alpha=0.5)+
+  geom_line(aes(x=log10(p), y=freq.pred), lwd=0.8)+
+  geom_line(aes(x=log10(p), y=Lower), lwd=0.8,lty=2, color="blue")+
+  geom_line(aes(x=log10(p), y=Upper), lwd=0.8,lty=2, color="blue")+
+  scale_color_manual(values = c("red","blue", "black"))+main_theme
+
+
+neutral_model_dorsal_feather <- neutral_model_dorsal_feather + annotate("text",x=-5.3,y=0.85, 
+                                                                    label= paste("R^2=",round(Rsqr,3)))+
+  annotate("text",x=-5.3,y=0.80, 
+           label= paste("Nm=",round(coef(m.fit)*N)))+
+  xlab("log (Mean relative abundance)")+
+  ylab("Occurrence frequency")+
+  scale_color_manual(values=c("#E64B357F","#3C54887F","#91D1C27F" ))
+
+
+neutral_model_dorsal_feather 
+
+
+# partion by above, below and middle 
+above.list <- rownames(bacnlsALL)[bacnlsALL$freq >= bacnlsALL$Upper]
+below.list <- rownames(bacnlsALL)[bacnlsALL$freq <= bacnlsALL$Lower]
+middle.list <- rownames(bacnlsALL)[bacnlsALL$freq < bacnlsALL$Upper&bacnlsALL$freq > bacnlsALL$Lower]
+
+
+design.sub <- design[design$tissue_explanation=="dorsal feather",]
+mat <- otu_table[,rownames(design.sub)]
+
+mat_t <-  t(mat)
+
+mat_t1 <- as.data.frame(t(mat_t))
+mat_t1$above <- rowSums(mat_t1)
+mat_t1$below <- rowSums(mat_t1)
+mat_t1$middle <- rowSums(mat_t1)
+
+mat_t1$above[!rownames(mat_t1)%in%above.list] <- 0
+mat_t1$below [!rownames(mat_t1)%in%below.list]<- 0
+mat_t1$middle[!rownames(mat_t1)%in%middle.list] <- 0
+
+mat_t1[,c("above", "below", "middle")][1:6,]
+
+dorsal_feather.partion <- t(mat_t1[,c("above", "below", "middle")])
+
+name <- "dorsal_feather"
+rownames(dorsal_feather.partion) <- paste(name,rownames(dorsal_feather.partion), sep=".")
+dorsal_feather.partion[1:3,1:20]
+```
+
+##neck skin
+```{r}
+set.seed(0)
+otu_table <-  read.delim("otu_table.txt", row.names= 1,  header=T, sep="\t")
+otu_table <- otu_table[,design$tissue_explanation=="neck skin"]
+spp= as.data.frame(t(rrarefy(t(otu_table), min(colSums(otu_table)))))
+spp[1:6,1:6]
+colSums(spp)
+
+spp <- t(spp)
+spp[1:6,1:6]
+
+N <- mean(apply(spp, 1, sum))
+p.m <- apply(spp, 2, mean) 
+p.m <- p.m[p.m != 0]
+p <- p.m/N   
+spp.bi <- 1*(spp>0) 
+freq <- apply(spp.bi, 2, mean)
+freq <- freq[freq != 0]
+C <- merge(p, freq, by=0)
+C <- C[order(C[,2]),]
+C <- as.data.frame(C)
+C.0 <- C[!(apply(C, 1, function(y) any(y == 0))),]
+p <- C.0[,2]
+freq <- C.0[,3]
+names(p) <- C.0[,1]
+names(freq) <- C.0[,1]
+d = 1/N
+##Fit model parameter m (or Nm) using Non-linear least squares (NLS)
+m.fit <- nlsLM(freq ~ pbeta(d, N*m*p, N*m*(1 -p), lower.tail=FALSE),start=list(m=0.1))
+m.fit #get the m value
+m.ci <- confint(m.fit, 'm', level=0.95)
+freq.pred <- pbeta(d, N*coef(m.fit)*p, N*coef(m.fit)*(1 -p), lower.tail=FALSE)
+pred.ci <- binconf(freq.pred*nrow(spp), nrow(spp), alpha=0.05, method="wilson", return.df=TRUE)
+Rsqr <- 1 - (sum((freq - freq.pred)^2))/(sum((freq - mean(freq))^2))
+Rsqr# get the R2 value
+
+#Drawing the figure using grid package:
+#p is the mean relative abundance
+#freq is occurrence frequency
+#freq.pred is predicted occurrence frequency
+bacnlsALL <-data.frame(p,freq,freq.pred,pred.ci[,2:3])
+inter.col<-rep('black',nrow(bacnlsALL))
+inter.col[bacnlsALL$freq <= bacnlsALL$Lower]<-'#A52A2A'#define the color of below points
+inter.col[bacnlsALL$freq >= bacnlsALL$Upper]<-'#29A6A6'#define the color of up points
+
+
+neutral_model_neck_skin <- ggplot(bacnlsALL,aes(x=log10(p), y=freq))+
+  geom_point(aes(color=inter.col),alpha=0.5)+
+  geom_line(aes(x=log10(p), y=freq.pred), lwd=0.8)+
+  geom_line(aes(x=log10(p), y=Lower), lwd=0.8,lty=2, color="blue")+
+  geom_line(aes(x=log10(p), y=Upper), lwd=0.8,lty=2, color="blue")+
+  scale_color_manual(values = c("red","blue", "black"))+main_theme
+
+
+neutral_model_neck_skin <- neutral_model_neck_skin + annotate("text",x=-5.3,y=0.85, 
+                                                                        label= paste("R^2=",round(Rsqr,3)))+
+  annotate("text",x=-5.3,y=0.80, 
+           label= paste("Nm=",round(coef(m.fit)*N)))+
+  xlab("log (Mean relative abundance)")+
+  ylab("Occurrence frequency")+
+  scale_color_manual(values=c("#E64B357F","#3C54887F","#91D1C27F" ))
+
+neutral_model_neck_skin 
+
+
+# partion by above, below and middle 
+above.list <- rownames(bacnlsALL)[bacnlsALL$freq >= bacnlsALL$Upper]
+below.list <- rownames(bacnlsALL)[bacnlsALL$freq <= bacnlsALL$Lower]
+middle.list <- rownames(bacnlsALL)[bacnlsALL$freq < bacnlsALL$Upper&bacnlsALL$freq > bacnlsALL$Lower]
+
+
+design.sub <- design[design$tissue_explanation=="neck skin",]
+mat <- otu_table[,rownames(design.sub)]
+
+mat_t <-  t(mat)
+
+mat_t1 <- as.data.frame(t(mat_t))
+mat_t1$above <- rowSums(mat_t1)
+mat_t1$below <- rowSums(mat_t1)
+mat_t1$middle <- rowSums(mat_t1)
+
+mat_t1$above[!rownames(mat_t1)%in%above.list] <- 0
+mat_t1$below [!rownames(mat_t1)%in%below.list]<- 0
+mat_t1$middle[!rownames(mat_t1)%in%middle.list] <- 0
+
+mat_t1[,c("above", "below", "middle")][1:6,]
+
+neck_skin.partion <- t(mat_t1[,c("above", "below", "middle")])
+
+name <- "neck_skin"
+rownames(neck_skin.partion) <- paste(name,rownames(neck_skin.partion), sep=".")
+neck_skin.partion[1:3,1:20]
+```
+
+## breast feather
+```{r}
+set.seed(0)
+otu_table <-  read.delim("otu_table.txt", row.names= 1,  header=T, sep="\t")
+otu_table <- otu_table[,design$tissue_explanation=="breast feather"]
+spp= as.data.frame(t(rrarefy(t(otu_table), min(colSums(otu_table)))))
+spp[1:6,1:6]
+colSums(spp)
+
+spp <- t(spp)
+spp[1:6,1:6]
+
+N <- mean(apply(spp, 1, sum))
+p.m <- apply(spp, 2, mean) 
+p.m <- p.m[p.m != 0]
+p <- p.m/N    
+spp.bi <- 1*(spp>0) 
+freq <- apply(spp.bi, 2, mean)
+freq <- freq[freq != 0]
+C <- merge(p, freq, by=0)
+C <- C[order(C[,2]),]
+C <- as.data.frame(C)
+C.0 <- C[!(apply(C, 1, function(y) any(y == 0))),]
+p <- C.0[,2]
+freq <- C.0[,3]
+names(p) <- C.0[,1]
+names(freq) <- C.0[,1]
+d = 1/N
+##Fit model parameter m (or Nm) using Non-linear least squares (NLS)
+m.fit <- nlsLM(freq ~ pbeta(d, N*m*p, N*m*(1 -p), lower.tail=FALSE),start=list(m=0.1))
+m.fit #get the m value
+m.ci <- confint(m.fit, 'm', level=0.95)
+freq.pred <- pbeta(d, N*coef(m.fit)*p, N*coef(m.fit)*(1 -p), lower.tail=FALSE)
+pred.ci <- binconf(freq.pred*nrow(spp), nrow(spp), alpha=0.05, method="wilson", return.df=TRUE)
+Rsqr <- 1 - (sum((freq - freq.pred)^2))/(sum((freq - mean(freq))^2))
+Rsqr# get the R2 value
+
+#Drawing the figure using grid package:
+#p is the mean relative abundance
+#freq is occurrence frequency
+#freq.pred is predicted occurrence frequency
+bacnlsALL <-data.frame(p,freq,freq.pred,pred.ci[,2:3])
+inter.col<-rep('black',nrow(bacnlsALL))
+inter.col[bacnlsALL$freq <= bacnlsALL$Lower]<-'#A52A2A'#define the color of below points
+inter.col[bacnlsALL$freq >= bacnlsALL$Upper]<-'#29A6A6'#define the color of up points
+
+
+neutral_model_breast_feather <- ggplot(bacnlsALL,aes(x=log10(p), y=freq))+
+  geom_point(aes(color=inter.col),alpha=0.5)+
+  geom_line(aes(x=log10(p), y=freq.pred), lwd=0.8)+
+  geom_line(aes(x=log10(p), y=Lower), lwd=0.8,lty=2, color="blue")+
+  geom_line(aes(x=log10(p), y=Upper), lwd=0.8,lty=2, color="blue")+
+  scale_color_manual(values = c("red","blue", "black"))+main_theme
+
+
+neutral_model_breast_feather <- neutral_model_breast_feather + annotate("text",x=-5.3,y=0.85, 
+                                                                        label= paste("R^2=",round(Rsqr,3)))+
+  annotate("text",x=-5.3,y=0.80, 
+           label= paste("Nm=",round(coef(m.fit)*N)))+
+  xlab("log (Mean relative abundance)")+
+  ylab("Occurrence frequency")+
+  scale_color_manual(values=c("#E64B357F","#3C54887F","#91D1C27F" ))
+
+neutral_model_breast_feather 
+
+
+# partion by above, below and middle 
+above.list <- rownames(bacnlsALL)[bacnlsALL$freq >= bacnlsALL$Upper]
+below.list <- rownames(bacnlsALL)[bacnlsALL$freq <= bacnlsALL$Lower]
+middle.list <- rownames(bacnlsALL)[bacnlsALL$freq < bacnlsALL$Upper&bacnlsALL$freq > bacnlsALL$Lower]
+
+
+design.sub <- design[design$tissue_explanation=="breast feather",]
+mat <- otu_table[,rownames(design.sub)]
+
+mat_t <-  t(mat)
+
+mat_t1 <- as.data.frame(t(mat_t))
+mat_t1$above <- rowSums(mat_t1)
+mat_t1$below <- rowSums(mat_t1)
+mat_t1$middle <- rowSums(mat_t1)
+
+mat_t1$above[!rownames(mat_t1)%in%above.list] <- 0
+mat_t1$below [!rownames(mat_t1)%in%below.list]<- 0
+mat_t1$middle[!rownames(mat_t1)%in%middle.list] <- 0
+
+mat_t1[,c("above", "below", "middle")][1:6,]
+
+breast_feather.partion <- t(mat_t1[,c("above", "below", "middle")])
+
+name <- "breast_feather"
+rownames(breast_feather.partion) <- paste(name,rownames(breast_feather.partion), sep=".")
+breast_feather.partion[1:3,1:20]
+```
+
+## creast feather
+```{r}
+set.seed(0)
+
+otu_table <-  read.delim("otu_table.txt", row.names= 1,  header=T, sep="\t")
+otu_table <- otu_table[,design$tissue_explanation=="creast feather"]
+spp= as.data.frame(t(rrarefy(t(otu_table), min(colSums(otu_table)))))
+spp[1:6,1:6]
+colSums(spp)
+
+spp <- t(spp)
+spp[1:6,1:6]
+
+N <- mean(apply(spp, 1, sum))
+p.m <- apply(spp, 2, mean) 
+p.m <- p.m[p.m != 0]
+p <- p.m/N   
+spp.bi <- 1*(spp>0) 
+freq <- apply(spp.bi, 2, mean)
+freq <- freq[freq != 0]
+C <- merge(p, freq, by=0)
+C <- C[order(C[,2]),]
+C <- as.data.frame(C)
+C.0 <- C[!(apply(C, 1, function(y) any(y == 0))),]
+p <- C.0[,2]
+freq <- C.0[,3]
+names(p) <- C.0[,1]
+names(freq) <- C.0[,1]
+d = 1/N
+##Fit model parameter m (or Nm) using Non-linear least squares (NLS)
+m.fit <- nlsLM(freq ~ pbeta(d, N*m*p, N*m*(1 -p), lower.tail=FALSE),start=list(m=0.1))
+m.fit #get the m value
+m.ci <- confint(m.fit, 'm', level=0.95)
+freq.pred <- pbeta(d, N*coef(m.fit)*p, N*coef(m.fit)*(1 -p), lower.tail=FALSE)
+pred.ci <- binconf(freq.pred*nrow(spp), nrow(spp), alpha=0.05, method="wilson", return.df=TRUE)
+Rsqr <- 1 - (sum((freq - freq.pred)^2))/(sum((freq - mean(freq))^2))
+Rsqr# get the R2 value
+
+
+#Drawing the figure using grid package:
+#p is the mean relative abundance
+#freq is occurrence frequency
+#freq.pred is predicted occurrence frequency
+bacnlsALL <-data.frame(p,freq,freq.pred,pred.ci[,2:3])
+inter.col<-rep('black',nrow(bacnlsALL))
+inter.col[bacnlsALL$freq <= bacnlsALL$Lower]<-'#A52A2A'#define the color of below points
+inter.col[bacnlsALL$freq >= bacnlsALL$Upper]<-'#29A6A6'#define the color of up points
+
+
+neutral_model_creast_feather <- ggplot(bacnlsALL,aes(x=log10(p), y=freq))+
+  geom_point(aes(color=inter.col),alpha=0.5)+
+  geom_line(aes(x=log10(p), y=freq.pred), lwd=0.8)+
+  geom_line(aes(x=log10(p), y=Lower), lwd=0.8,lty=2, color="blue")+
+  geom_line(aes(x=log10(p), y=Upper), lwd=0.8,lty=2, color="blue")+
+  scale_color_manual(values = c("red","blue", "black"))+main_theme
+
+
+neutral_model_creast_feather <- neutral_model_creast_feather + annotate("text",x=-5.3,y=0.85, 
+                                                                        label= paste("R^2=",round(Rsqr,3)))+
+  annotate("text",x=-5.3,y=0.80, 
+           label= paste("Nm=",round(coef(m.fit)*N)))+
+  xlab("log (Mean relative abundance)")+
+  ylab("Occurrence frequency")+
+  scale_color_manual(values=c("#E64B357F","#3C54887F","#91D1C27F" ))
+
+neutral_model_creast_feather 
+
+
+# partion by above, below and middle 
+above.list <- rownames(bacnlsALL)[bacnlsALL$freq >= bacnlsALL$Upper]
+below.list <- rownames(bacnlsALL)[bacnlsALL$freq <= bacnlsALL$Lower]
+middle.list <- rownames(bacnlsALL)[bacnlsALL$freq < bacnlsALL$Upper&bacnlsALL$freq > bacnlsALL$Lower]
+
+
+design.sub <- design[design$tissue_explanation=="creast feather",]
+mat <- otu_table[,rownames(design.sub)]
+
+mat_t <-  t(mat)
+
+mat_t1 <- as.data.frame(t(mat_t))
+mat_t1$above <- rowSums(mat_t1)
+mat_t1$below <- rowSums(mat_t1)
+mat_t1$middle <- rowSums(mat_t1)
+
+mat_t1$above[!rownames(mat_t1)%in%above.list] <- 0
+mat_t1$below [!rownames(mat_t1)%in%below.list]<- 0
+mat_t1$middle[!rownames(mat_t1)%in%middle.list] <- 0
+
+mat_t1[,c("above", "below", "middle")][1:6,]
+
+creast_feather.partion <- t(mat_t1[,c("above", "below", "middle")])
+name <- "creast_feather"
+rownames(creast_feather.partion) <- paste(name,rownames(creast_feather.partion), sep=".")
+creast_feather.partion[1:3,1:20]
+```
+
+## break
+```{r}
+set.seed(0)
+
+otu_table <-  read.delim("otu_table.txt", row.names= 1,  header=T, sep="\t")
+otu_table <- otu_table[,design$tissue_explanation=="break"]
+spp= as.data.frame(t(rrarefy(t(otu_table), min(colSums(otu_table)))))
+spp[1:6,1:6]
+colSums(spp)
+
+spp <- t(spp)
+spp[1:6,1:6]
+
+N <- mean(apply(spp, 1, sum))
+p.m <- apply(spp, 2, mean) 
+p.m <- p.m[p.m != 0]
+p <- p.m/N    
+spp.bi <- 1*(spp>0) 
+freq <- apply(spp.bi, 2, mean)
+freq <- freq[freq != 0]
+C <- merge(p, freq, by=0)
+C <- C[order(C[,2]),]
+C <- as.data.frame(C)
+C.0 <- C[!(apply(C, 1, function(y) any(y == 0))),]
+p <- C.0[,2]
+freq <- C.0[,3]
+names(p) <- C.0[,1]
+names(freq) <- C.0[,1]
+d = 1/N
+##Fit model parameter m (or Nm) using Non-linear least squares (NLS)
+m.fit <- nlsLM(freq ~ pbeta(d, N*m*p, N*m*(1 -p), lower.tail=FALSE),start=list(m=0.1))
+m.fit #get the m value
+m.ci <- confint(m.fit, 'm', level=0.95)
+freq.pred <- pbeta(d, N*coef(m.fit)*p, N*coef(m.fit)*(1 -p), lower.tail=FALSE)
+pred.ci <- binconf(freq.pred*nrow(spp), nrow(spp), alpha=0.05, method="wilson", return.df=TRUE)
+Rsqr <- 1 - (sum((freq - freq.pred)^2))/(sum((freq - mean(freq))^2))
+Rsqr# get the R2 value
+
+
+#Drawing the figure using grid package:
+#p is the mean relative abundance
+#freq is occurrence frequency
+#freq.pred is predicted occurrence frequency
+bacnlsALL <-data.frame(p,freq,freq.pred,pred.ci[,2:3])
+inter.col<-rep('black',nrow(bacnlsALL))
+inter.col[bacnlsALL$freq <= bacnlsALL$Lower]<-'#A52A2A'#define the color of below points
+inter.col[bacnlsALL$freq >= bacnlsALL$Upper]<-'#29A6A6'#define the color of up points
+
+
+neutral_model_break <- ggplot(bacnlsALL,aes(x=log10(p), y=freq))+
+  geom_point(aes(color=inter.col),alpha=0.5)+
+  geom_line(aes(x=log10(p), y=freq.pred), lwd=0.8)+
+  geom_line(aes(x=log10(p), y=Lower), lwd=0.8,lty=2, color="blue")+
+  geom_line(aes(x=log10(p), y=Upper), lwd=0.8,lty=2, color="blue")+
+  scale_color_manual(values = c("red","blue", "black"))+main_theme
+
+
+neutral_model_break <- neutral_model_break + annotate("text",x=-5.3,y=0.85, 
+                                                                        label= paste("R^2=",round(Rsqr,3)))+
+  annotate("text",x=-5.3,y=0.80, 
+           label= paste("Nm=",round(coef(m.fit)*N)))+
+  xlab("log (Mean relative abundance)")+
+  ylab("Occurrence frequency")+
+  scale_color_manual(values=c("#E64B357F","#3C54887F","#91D1C27F" ))
+
+neutral_model_break 
+
+
+# partion by above, below and middle 
+above.list <- rownames(bacnlsALL)[bacnlsALL$freq >= bacnlsALL$Upper]
+below.list <- rownames(bacnlsALL)[bacnlsALL$freq <= bacnlsALL$Lower]
+middle.list <- rownames(bacnlsALL)[bacnlsALL$freq < bacnlsALL$Upper&bacnlsALL$freq > bacnlsALL$Lower]
+
+
+design.sub <- design[design$tissue_explanation=="break",]
+mat <- otu_table[,rownames(design.sub)]
+
+mat_t <-  t(mat)
+
+mat_t1 <- as.data.frame(t(mat_t))
+mat_t1$above <- rowSums(mat_t1)
+mat_t1$below <- rowSums(mat_t1)
+mat_t1$middle <- rowSums(mat_t1)
+
+mat_t1$above[!rownames(mat_t1)%in%above.list] <- 0
+mat_t1$below [!rownames(mat_t1)%in%below.list]<- 0
+mat_t1$middle[!rownames(mat_t1)%in%middle.list] <- 0
+
+mat_t1[,c("above", "below", "middle")][1:6,]
+
+break.partion <- t(mat_t1[,c("above", "below", "middle")])
+
+name <- "break"
+rownames(break.partion) <- paste(name,rownames(break.partion), sep=".")
+break.partion[1:3,1:20]
+```
+
+## head skin
+```{r}
+set.seed(0)
+
+otu_table <-  read.delim("otu_table.txt", row.names= 1,  header=T, sep="\t")
+otu_table <- otu_table[,design$tissue_explanation=="head skin"]
+spp= as.data.frame(t(rrarefy(t(otu_table), min(colSums(otu_table)))))
+spp[1:6,1:6]
+colSums(spp)
+
+spp <- t(spp)
+spp[1:6,1:6]
+
+N <- mean(apply(spp, 1, sum))
+p.m <- apply(spp, 2, mean) 
+p.m <- p.m[p.m != 0]
+p <- p.m/N    
+spp.bi <- 1*(spp>0) 
+freq <- apply(spp.bi, 2, mean)
+freq <- freq[freq != 0]
+C <- merge(p, freq, by=0)
+C <- C[order(C[,2]),]
+C <- as.data.frame(C)
+C.0 <- C[!(apply(C, 1, function(y) any(y == 0))),]
+p <- C.0[,2]
+freq <- C.0[,3]
+names(p) <- C.0[,1]
+names(freq) <- C.0[,1]
+d = 1/N
+##Fit model parameter m (or Nm) using Non-linear least squares (NLS)
+m.fit <- nlsLM(freq ~ pbeta(d, N*m*p, N*m*(1 -p), lower.tail=FALSE),start=list(m=0.1))
+m.fit #get the m value
+m.ci <- confint(m.fit, 'm', level=0.95)
+freq.pred <- pbeta(d, N*coef(m.fit)*p, N*coef(m.fit)*(1 -p), lower.tail=FALSE)
+pred.ci <- binconf(freq.pred*nrow(spp), nrow(spp), alpha=0.05, method="wilson", return.df=TRUE)
+Rsqr <- 1 - (sum((freq - freq.pred)^2))/(sum((freq - mean(freq))^2))
+Rsqr# get the R2 value
+
+
+#Drawing the figure using grid package:
+#p is the mean relative abundance
+#freq is occurrence frequency
+#freq.pred is predicted occurrence frequency
+bacnlsALL <-data.frame(p,freq,freq.pred,pred.ci[,2:3])
+inter.col<-rep('black',nrow(bacnlsALL))
+inter.col[bacnlsALL$freq <= bacnlsALL$Lower]<-'#A52A2A'#define the color of below points
+inter.col[bacnlsALL$freq >= bacnlsALL$Upper]<-'#29A6A6'#define the color of up points
+
+
+neutral_model_head_skin <- ggplot(bacnlsALL,aes(x=log10(p), y=freq))+
+  geom_point(aes(color=inter.col),alpha=0.5)+
+  geom_line(aes(x=log10(p), y=freq.pred), lwd=0.8)+
+  geom_line(aes(x=log10(p), y=Lower), lwd=0.8,lty=2, color="blue")+
+  geom_line(aes(x=log10(p), y=Upper), lwd=0.8,lty=2, color="blue")+
+  scale_color_manual(values = c("red","blue", "black"))+main_theme
+
+
+neutral_model_head_skin <- neutral_model_head_skin + annotate("text",x=-5.3,y=0.85, 
+                                                      label= paste("R^2=",round(Rsqr,3)))+
+  annotate("text",x=-5.3,y=0.80, 
+           label= paste("Nm=",round(coef(m.fit)*N)))+
+  xlab("log (Mean relative abundance)")+
+  ylab("Occurrence frequency")+
+  scale_color_manual(values=c("#E64B357F","#3C54887F","#91D1C27F" ))
+
+neutral_model_head_skin 
+
+
+# partion by above, below and middle 
+above.list <- rownames(bacnlsALL)[bacnlsALL$freq >= bacnlsALL$Upper]
+below.list <- rownames(bacnlsALL)[bacnlsALL$freq <= bacnlsALL$Lower]
+middle.list <- rownames(bacnlsALL)[bacnlsALL$freq < bacnlsALL$Upper&bacnlsALL$freq > bacnlsALL$Lower]
+
+
+design.sub <- design[design$tissue_explanation=="head skin",]
+mat <- otu_table[,rownames(design.sub)]
+
+mat_t <-  t(mat)
+
+mat_t1 <- as.data.frame(t(mat_t))
+mat_t1$above <- rowSums(mat_t1)
+mat_t1$below <- rowSums(mat_t1)
+mat_t1$middle <- rowSums(mat_t1)
+
+mat_t1$above[!rownames(mat_t1)%in%above.list] <- 0
+mat_t1$below [!rownames(mat_t1)%in%below.list]<- 0
+mat_t1$middle[!rownames(mat_t1)%in%middle.list] <- 0
+
+mat_t1[,c("above", "below", "middle")][1:6,]
+
+head_skin.partion <- t(mat_t1[,c("above", "below", "middle")])
+
+name <- "head_skin"
+rownames(head_skin.partion) <- paste(name,rownames(head_skin.partion), sep=".")
+head_skin.partion[1:3,1:20]
+
+```
+
+## skin of preen gland
+```{r}
+set.seed(0)
+
+otu_table <-  read.delim("otu_table.txt", row.names= 1,  header=T, sep="\t")
+otu_table <- otu_table[,design$tissue_explanation=="skin of preen gland"]
+spp= as.data.frame(t(rrarefy(t(otu_table), min(colSums(otu_table)))))
+spp[1:6,1:6]
+colSums(spp)
+
+spp <- t(spp)
+spp[1:6,1:6]
+
+N <- mean(apply(spp, 1, sum))
+p.m <- apply(spp, 2, mean)
+p.m <- p.m[p.m != 0]
+p <- p.m/N    
+spp.bi <- 1*(spp>0) 
+freq <- apply(spp.bi, 2, mean)
+freq <- freq[freq != 0]
+C <- merge(p, freq, by=0)
+C <- C[order(C[,2]),]
+C <- as.data.frame(C)
+C.0 <- C[!(apply(C, 1, function(y) any(y == 0))),]
+p <- C.0[,2]
+freq <- C.0[,3]
+names(p) <- C.0[,1]
+names(freq) <- C.0[,1]
+d = 1/N
+##Fit model parameter m (or Nm) using Non-linear least squares (NLS)
+m.fit <- nlsLM(freq ~ pbeta(d, N*m*p, N*m*(1 -p), lower.tail=FALSE),start=list(m=0.1))
+m.fit #get the m value
+m.ci <- confint(m.fit, 'm', level=0.95)
+freq.pred <- pbeta(d, N*coef(m.fit)*p, N*coef(m.fit)*(1 -p), lower.tail=FALSE)
+pred.ci <- binconf(freq.pred*nrow(spp), nrow(spp), alpha=0.05, method="wilson", return.df=TRUE)
+Rsqr <- 1 - (sum((freq - freq.pred)^2))/(sum((freq - mean(freq))^2))
+Rsqr# get the R2 value
+
+
+#Drawing the figure using grid package:
+#p is the mean relative abundance
+#freq is occurrence frequency
+#freq.pred is predicted occurrence frequency
+bacnlsALL <-data.frame(p,freq,freq.pred,pred.ci[,2:3])
+inter.col<-rep('black',nrow(bacnlsALL))
+inter.col[bacnlsALL$freq <= bacnlsALL$Lower]<-'#A52A2A'#define the color of below points
+inter.col[bacnlsALL$freq >= bacnlsALL$Upper]<-'#29A6A6'#define the color of up points
+
+
+
+neutral_model_preen_skin <- ggplot(bacnlsALL,aes(x=log10(p), y=freq))+
+  geom_point(aes(color=inter.col),alpha=0.5)+
+  geom_line(aes(x=log10(p), y=freq.pred), lwd=0.8)+
+  geom_line(aes(x=log10(p), y=Lower), lwd=0.8,lty=2, color="blue")+
+  geom_line(aes(x=log10(p), y=Upper), lwd=0.8,lty=2, color="blue")+
+  scale_color_manual(values = c("red","blue", "black"))+main_theme
+
+
+neutral_model_preen_skin <- neutral_model_preen_skin + annotate("text",x=-5.3,y=0.85, 
+                                                              label= paste("R^2=",round(Rsqr,3)))+
+  annotate("text",x=-5.3,y=0.80, 
+           label= paste("Nm=",round(coef(m.fit)*N)))+
+  xlab("log (Mean relative abundance)")+
+  ylab("Occurrence frequency")+
+  scale_color_manual(values=c("#E64B357F","#3C54887F","#91D1C27F" ))
+
+neutral_model_preen_skin 
+
+
+
+# partion by above, below and middle 
+above.list <- rownames(bacnlsALL)[bacnlsALL$freq >= bacnlsALL$Upper]
+below.list <- rownames(bacnlsALL)[bacnlsALL$freq <= bacnlsALL$Lower]
+middle.list <- rownames(bacnlsALL)[bacnlsALL$freq < bacnlsALL$Upper&bacnlsALL$freq > bacnlsALL$Lower]
+
+
+design.sub <- design[design$tissue_explanation=="skin of preen gland",]
+mat <- otu_table[,rownames(design.sub)]
+
+mat_t <-  t(mat)
+
+mat_t1 <- as.data.frame(t(mat_t))
+mat_t1$above <- rowSums(mat_t1)
+mat_t1$below <- rowSums(mat_t1)
+mat_t1$middle <- rowSums(mat_t1)
+
+mat_t1$above[!rownames(mat_t1)%in%above.list] <- 0
+mat_t1$below [!rownames(mat_t1)%in%below.list]<- 0
+mat_t1$middle[!rownames(mat_t1)%in%middle.list] <- 0
+
+mat_t1[,c("above", "below", "middle")][1:6,]
+
+preen_skin.partion <- t(mat_t1[,c("above", "below", "middle")])
+
+name <- "preen_skin"
+rownames(preen_skin.partion) <- paste(name,rownames(preen_skin.partion), sep=".")
+preen_skin.partion[1:3,1:20]
+```
+
+##dorsal skin
+```{r}
+set.seed(0)
+
+otu_table <-  read.delim("otu_table.txt", row.names= 1,  header=T, sep="\t")
+otu_table <- otu_table[,design$tissue_explanation=="dorsal skin"]
+spp= as.data.frame(t(rrarefy(t(otu_table), min(colSums(otu_table)))))
+
+colSums(spp)
+
+spp <- t(spp)
+
+
+N <- mean(apply(spp, 1, sum))
+p.m <- apply(spp, 2, mean)
+p.m <- p.m[p.m != 0]
+p <- p.m/N    
+spp.bi <- 1*(spp>0) 
+freq <- apply(spp.bi, 2, mean)
+freq <- freq[freq != 0]
+C <- merge(p, freq, by=0)
+C <- C[order(C[,2]),]
+C <- as.data.frame(C)
+C.0 <- C[!(apply(C, 1, function(y) any(y == 0))),]
+p <- C.0[,2]
+freq <- C.0[,3]
+names(p) <- C.0[,1]
+names(freq) <- C.0[,1]
+d = 1/N
+##Fit model parameter m (or Nm) using Non-linear least squares (NLS)
+m.fit <- nlsLM(freq ~ pbeta(d, N*m*p, N*m*(1 -p), lower.tail=FALSE),start=list(m=0.1))
+m.fit #get the m value
+m.ci <- confint(m.fit, 'm', level=0.95)
+freq.pred <- pbeta(d, N*coef(m.fit)*p, N*coef(m.fit)*(1 -p), lower.tail=FALSE)
+pred.ci <- binconf(freq.pred*nrow(spp), nrow(spp), alpha=0.05, method="wilson", return.df=TRUE)
+Rsqr <- 1 - (sum((freq - freq.pred)^2))/(sum((freq - mean(freq))^2))
+Rsqr# get the R2 value
+
+
+#Drawing the figure using grid package:
+#p is the mean relative abundance
+#freq is occurrence frequency
+#freq.pred is predicted occurrence frequency
+bacnlsALL <-data.frame(p,freq,freq.pred,pred.ci[,2:3])
+inter.col<-rep('black',nrow(bacnlsALL))
+inter.col[bacnlsALL$freq <= bacnlsALL$Lower]<-'#A52A2A'#define the color of below points
+inter.col[bacnlsALL$freq >= bacnlsALL$Upper]<-'#29A6A6'#define the color of up points
+
+
+
+neutral_model_dorsal_skin <- ggplot(bacnlsALL,aes(x=log10(p), y=freq))+
+  geom_point(aes(color=inter.col),alpha=0.5)+
+  geom_line(aes(x=log10(p), y=freq.pred), lwd=0.8)+
+  geom_line(aes(x=log10(p), y=Lower), lwd=0.8,lty=2, color="blue")+
+  geom_line(aes(x=log10(p), y=Upper), lwd=0.8,lty=2, color="blue")+
+  scale_color_manual(values = c("red","blue", "black"))+main_theme
+
+
+neutral_model_dorsal_skin <- neutral_model_dorsal_skin + annotate("text",x=-5.3,y=0.85, 
+                                                                label= paste("R^2=",round(Rsqr,3)))+
+  annotate("text",x=-5.3,y=0.80, 
+           label= paste("Nm=",round(coef(m.fit)*N)))+
+  xlab("log (Mean relative abundance)")+
+  ylab("Occurrence frequency")+
+  scale_color_manual(values=c("#E64B357F","#3C54887F","#91D1C27F" ))
+
+neutral_model_dorsal_skin 
+
+# partion by above, below and middle 
+above.list <- rownames(bacnlsALL)[bacnlsALL$freq >= bacnlsALL$Upper]
+below.list <- rownames(bacnlsALL)[bacnlsALL$freq <= bacnlsALL$Lower]
+middle.list <- rownames(bacnlsALL)[bacnlsALL$freq < bacnlsALL$Upper&bacnlsALL$freq > bacnlsALL$Lower]
+
+
+design.sub <- design[design$tissue_explanation=="dorsal skin",]
+mat <- otu_table[,rownames(design.sub)]
+
+mat_t <-  t(mat)
+
+
+
+mat_t1 <- as.data.frame(t(mat_t))
+mat_t1$above <- rowSums(mat_t1)
+mat_t1$below <- rowSums(mat_t1)
+mat_t1$middle <- rowSums(mat_t1)
+
+mat_t1$above[!rownames(mat_t1)%in%above.list] <- 0
+mat_t1$below [!rownames(mat_t1)%in%below.list]<- 0
+mat_t1$middle[!rownames(mat_t1)%in%middle.list] <- 0
+
+mat_t1[,c("above", "below", "middle")][1:6,]
+
+dorsal_skin.partion <- t(mat_t1[,c("above", "below", "middle")])
+
+name <- "dorsal_skin"
+rownames(dorsal_skin.partion) <- paste(name,rownames(dorsal_skin.partion), sep=".")
+dorsal_skin.partion[1:3,1:20]
+```
+
+##breast skin
+```{r}
+set.seed(0)
+
+otu_table <-  read.delim("otu_table.txt", row.names= 1,  header=T, sep="\t")
+otu_table <- otu_table[,design$tissue_explanation=="breast skin"]
+spp= as.data.frame(t(rrarefy(t(otu_table), min(colSums(otu_table)))))
+spp[1:6,1:6]
+colSums(spp)
+
+spp <- t(spp)
+spp[1:6,1:6]
+
+N <- mean(apply(spp, 1, sum))
+p.m <- apply(spp, 2, mean) 
+p.m <- p.m[p.m != 0]
+p <- p.m/N    
+spp.bi <- 1*(spp>0) 
+freq <- apply(spp.bi, 2, mean)
+freq <- freq[freq != 0]
+C <- merge(p, freq, by=0)
+C <- C[order(C[,2]),]
+C <- as.data.frame(C)
+C.0 <- C[!(apply(C, 1, function(y) any(y == 0))),]
+p <- C.0[,2]
+freq <- C.0[,3]
+names(p) <- C.0[,1]
+names(freq) <- C.0[,1]
+d = 1/N
+##Fit model parameter m (or Nm) using Non-linear least squares (NLS)
+m.fit <- nlsLM(freq ~ pbeta(d, N*m*p, N*m*(1 -p), lower.tail=FALSE),start=list(m=0.1))
+m.fit #get the m value
+m.ci <- confint(m.fit, 'm', level=0.95)
+freq.pred <- pbeta(d, N*coef(m.fit)*p, N*coef(m.fit)*(1 -p), lower.tail=FALSE)
+pred.ci <- binconf(freq.pred*nrow(spp), nrow(spp), alpha=0.05, method="wilson", return.df=TRUE)
+Rsqr <- 1 - (sum((freq - freq.pred)^2))/(sum((freq - mean(freq))^2))
+Rsqr# get the R2 value
+
+
+#Drawing the figure using grid package:
+#p is the mean relative abundance
+#freq is occurrence frequency
+#freq.pred is predicted occurrence frequency
+bacnlsALL <-data.frame(p,freq,freq.pred,pred.ci[,2:3])
+inter.col<-rep('black',nrow(bacnlsALL))
+inter.col[bacnlsALL$freq <= bacnlsALL$Lower]<-'#A52A2A'#define the color of below points
+inter.col[bacnlsALL$freq >= bacnlsALL$Upper]<-'#29A6A6'#define the color of up points
+
+
+
+neutral_model_breast_skin <- ggplot(bacnlsALL,aes(x=log10(p), y=freq))+
+  geom_point(aes(color=inter.col),alpha=0.5)+
+  geom_line(aes(x=log10(p), y=freq.pred), lwd=0.8)+
+  geom_line(aes(x=log10(p), y=Lower), lwd=0.8,lty=2, color="blue")+
+  geom_line(aes(x=log10(p), y=Upper), lwd=0.8,lty=2, color="blue")+
+  scale_color_manual(values = c("red","blue", "black"))+main_theme
+
+
+neutral_model_breast_skin <- neutral_model_breast_skin + annotate("text",x=-5.3,y=0.85, 
+                                                                  label= paste("R^2=",round(Rsqr,3)))+
+  annotate("text",x=-5.3,y=0.80, 
+           label= paste("Nm=",round(coef(m.fit)*N)))+
+  xlab("log (Mean relative abundance)")+
+  ylab("Occurrence frequency")+
+  scale_color_manual(values=c("#E64B357F","#3C54887F","#91D1C27F" ))
+
+neutral_model_breast_skin 
+
+
+# partion by above, below and middle 
+above.list <- rownames(bacnlsALL)[bacnlsALL$freq >= bacnlsALL$Upper]
+below.list <- rownames(bacnlsALL)[bacnlsALL$freq <= bacnlsALL$Lower]
+middle.list <- rownames(bacnlsALL)[bacnlsALL$freq < bacnlsALL$Upper&bacnlsALL$freq > bacnlsALL$Lower]
+
+
+design.sub <- design[design$tissue_explanation=="breast skin",]
+mat <- otu_table[,rownames(design.sub)]
+
+mat_t <-  t(mat)
+
+
+
+mat_t1 <- as.data.frame(t(mat_t))
+mat_t1$above <- rowSums(mat_t1)
+mat_t1$below <- rowSums(mat_t1)
+mat_t1$middle <- rowSums(mat_t1)
+
+mat_t1$above[!rownames(mat_t1)%in%above.list] <- 0
+mat_t1$below [!rownames(mat_t1)%in%below.list]<- 0
+mat_t1$middle[!rownames(mat_t1)%in%middle.list] <- 0
+
+mat_t1[,c("above", "below", "middle")][1:6,]
+
+breast_skin.partion <- t(mat_t1[,c("above", "below", "middle")])
+
+name <- "breast_skin"
+rownames(breast_skin.partion) <- paste(name,rownames(breast_skin.partion), sep=".")
+breast_skin.partion[1:3,1:20]
+```
+
+
+##leg and foot
+```{r}
+set.seed(0)
+
+otu_table <-  read.delim("otu_table.txt", row.names= 1,  header=T, sep="\t")
+otu_table <- otu_table[,design$tissue_explanation=="leg and foot"]
+spp= as.data.frame(t(rrarefy(t(otu_table), min(colSums(otu_table)))))
+
+spp <- t(spp)
+
+N <- mean(apply(spp, 1, sum))
+p.m <- apply(spp, 2, mean) 
+p.m <- p.m[p.m != 0]
+p <- p.m/N    
+spp.bi <- 1*(spp>0) 
+freq <- apply(spp.bi, 2, mean)
+freq <- freq[freq != 0]
+C <- merge(p, freq, by=0)
+C <- C[order(C[,2]),]
+C <- as.data.frame(C)
+C.0 <- C[!(apply(C, 1, function(y) any(y == 0))),]
+p <- C.0[,2]
+freq <- C.0[,3]
+names(p) <- C.0[,1]
+names(freq) <- C.0[,1]
+d = 1/N
+##Fit model parameter m (or Nm) using Non-linear least squares (NLS)
+m.fit <- nlsLM(freq ~ pbeta(d, N*m*p, N*m*(1 -p), lower.tail=FALSE),start=list(m=0.1))
+m.fit #get the m value
+m.ci <- confint(m.fit, 'm', level=0.95)
+freq.pred <- pbeta(d, N*coef(m.fit)*p, N*coef(m.fit)*(1 -p), lower.tail=FALSE)
+pred.ci <- binconf(freq.pred*nrow(spp), nrow(spp), alpha=0.05, method="wilson", return.df=TRUE)
+Rsqr <- 1 - (sum((freq - freq.pred)^2))/(sum((freq - mean(freq))^2))
+Rsqr# get the R2 value
+
+
+#Drawing the figure using grid package:
+#p is the mean relative abundance
+#freq is occurrence frequency
+#freq.pred is predicted occurrence frequency
+bacnlsALL <-data.frame(p,freq,freq.pred,pred.ci[,2:3])
+inter.col<-rep('black',nrow(bacnlsALL))
+inter.col[bacnlsALL$freq <= bacnlsALL$Lower]<-'#A52A2A'#define the color of below points
+inter.col[bacnlsALL$freq >= bacnlsALL$Upper]<-'#29A6A6'#define the color of up points
+
+
+
+neutral_model_leg_foot <- ggplot(bacnlsALL,aes(x=log10(p), y=freq))+
+  geom_point(aes(color=inter.col),alpha=0.5)+
+  geom_line(aes(x=log10(p), y=freq.pred), lwd=0.8)+
+  geom_line(aes(x=log10(p), y=Lower), lwd=0.8,lty=2, color="blue")+
+  geom_line(aes(x=log10(p), y=Upper), lwd=0.8,lty=2, color="blue")+
+  scale_color_manual(values = c("red","blue", "black"))+main_theme
+
+
+neutral_model_leg_foot <- neutral_model_leg_foot + annotate("text",x=-5.3,y=0.85, 
+                                                                  label= paste("R^2=",round(Rsqr,3)))+
+  annotate("text",x=-5.3,y=0.80, 
+           label= paste("Nm=",round(coef(m.fit)*N)))+
+  xlab("log (Mean relative abundance)")+
+  ylab("Occurrence frequency")+
+  scale_color_manual(values=c("#E64B357F","#3C54887F","#91D1C27F" ))
+
+neutral_model_leg_foot 
+
+
+# partion by above, below and middle 
+above.list <- rownames(bacnlsALL)[bacnlsALL$freq >= bacnlsALL$Upper]
+below.list <- rownames(bacnlsALL)[bacnlsALL$freq <= bacnlsALL$Lower]
+middle.list <- rownames(bacnlsALL)[bacnlsALL$freq < bacnlsALL$Upper&bacnlsALL$freq > bacnlsALL$Lower]
+
+
+design.sub <- design[design$tissue_explanation=="leg and foot",]
+mat <- otu_table[,rownames(design.sub)]
+
+mat_t <-  t(mat)
+
+
+
+mat_t1 <- as.data.frame(t(mat_t))
+mat_t1$above <- rowSums(mat_t1)
+mat_t1$below <- rowSums(mat_t1)
+mat_t1$middle <- rowSums(mat_t1)
+
+mat_t1$above[!rownames(mat_t1)%in%above.list] <- 0
+mat_t1$below [!rownames(mat_t1)%in%below.list]<- 0
+mat_t1$middle[!rownames(mat_t1)%in%middle.list] <- 0
+
+mat_t1[,c("above", "below", "middle")][1:6,]
+
+leg_foot.partion <- t(mat_t1[,c("above", "below", "middle")])
+
+name <- "leg_foot"
+rownames(leg_foot.partion) <- paste(name,rownames(leg_foot.partion), sep=".")
+leg_foot.partion[1:3,1:20]
+```
+
+## pcoa for above, below and middle OTUs among 13 body sites
+
+```{r}
+
+# merge all partions from 13 body site samples
+otu.t <- rbind(cloaca.partion,
+               oral.partion,
+               neck_feather.partion,
+               dorsal_feather.partion,
+               neck_skin.partion,
+               breast_feather.partion,
+               creast_feather.partion,
+               break.partion,
+               head_skin.partion,
+               preen_skin.partion,
+               dorsal_skin.partion,
+               breast_skin.partion,
+               leg_foot.partion)
+
+
+otu <- t(otu.t)
+
+set.seed(0)
+
+otu_Flattening = as.data.frame(t(rrarefy(t(otu), min(colSums(otu)))))
+
+bray_curtis<- vegdist(t(otu_Flattening),method="bray")
+
+bray_curtis <- as.matrix(bray_curtis)
+
+
+pcoa = cmdscale(bray_curtis, k=4, eig=T) 
+points = as.data.frame(pcoa$points) # get coordinate string, format to dataframme
+colnames(points) = c("x", "y", "z","a") 
+eig = pcoa$eig
+
+design.partion <- data.frame(names=rownames(bray_curtis), 
+                             tissue=rep(c("cloaca", "oral", "neck_feather", "dorsal_feather",
+                                           "neck_skin", "breast_feather",
+                                          "creast_feather",
+                                          "break","head_skin",
+                                          "preen_skin",
+                                          "dorsal_skin",
+                                          "breast_skin",
+                                          "leg_foot"),rep(3,13)),
+                             partion=rep(c("above", "below", "middle"),13)
+                            )
+
+
+
+rownames(design.partion) <- design.partion$names
+design.partion <- design.partion[,-1]
+design.partion$habitat <- design.partion$tissue
+
+design.partion$habitat[design.partion$habitat%in%c('neck_feather', 'dorsal_feather',
+                                                   "breast_feather", "creast_feather")] <- "feather"
+
+design.partion$habitat[!design.partion$habitat%in%c("cloaca", "oral", "feather")] <- "skin"
+
+
+
+
+points = cbind(points, design.partion[match(rownames(points), rownames(design.partion)), ])
+
+
+tissue_level <- c("cloaca", "oral", 
+                  "creast_feather", "neck_feather", "dorsal_feather", "breast_feather",
+                  "neck_skin","dorsal_skin", "breast_skin", "preen_skin","head_skin", "break", "leg_foot")
+points$tissue <- factor(points$tissue, level=tissue_level)
+
+
+cl=c("#E64B357F", "#3C54887F","#91D1C27F")
+
+
+p = ggplot(points, aes(x=x, y=y, color=partion, shape=habitat))
+p = p + geom_point(alpha=1, size=2) +
+  labs(x=paste("PCoA 1 (", format(100 * eig[1] / sum(eig), digits=4), "%)", sep=""),
+       y=paste("PCoA 2 (", format(100 * eig[2] / sum(eig), digits=4), "%)", sep=""),
+       title="Bray_Curtis PCoA") +
+  main_theme
+p=p+scale_color_manual(values=cl)+theme(legend.position = "right")
+
+pcoa_neutral_partion <- p
+pcoa_neutral_partion #Figure 5e
+
+
+
+adonis2(bray_curtis~design.partion$tissue+design.partion$partion,
+        permutations = 999, by="margin")
+```
+
+
+
+
+## bar plot for 4 habitat groups
+```{r}
+bar <- data.frame(cloaca=c(table(t(cloaca.partion) [,1]>0)[2],
+                           table(t(cloaca.partion) [,2]>0)[2],
+                           table(t(cloaca.partion) [,3]>0)[2]),
+                  oral=c(table(t(oral.partion) [,1]>0)[2],
+                         table(t(oral.partion) [,2]>0)[2],
+                         table(t(oral.partion) [,3]>0)[2]),
+                  feather=c(table(t(feather.partion) [,1]>0)[2],
+                            table(t(feather.partion) [,2]>0)[2],
+                            table(t(feather.partion) [,3]>0)[2]),
+                  skin=c(table(t(skin.partion) [,1]>0)[2],
+                         table(t(skin.partion) [,2]>0)[2],
+                         table(t(skin.partion) [,3]>0)[2]))
+
+
+
+rownames(bar) <- c("Above", "Below", "Neutral")
+
+per <-  t(t(bar)/colSums(bar,na=T)) * 100 
+
+
+bar.long <- as.data.frame(melt(per, value.name = "value"))
+colnames(bar.long)[1:2] <- c("partion", "habitat")
+
+
+cl=c("#E64B357F", "#3C54887F","#91D1C27F")
+
+
+
+p <- ggplot(bar.long,aes(x=habitat,y=value, fill=partion))+
+  geom_bar(stat = "identity", position = "dodge", alpha=1)+
+  scale_fill_manual(values=cl)+main_theme+
+  labs(x="", y="proportion of OTUs")
+otu.per.4habitats <- p
+otu.per.4habitats #Figure 5f
+```
+
+
+
+
+## r2 and m
+```{r}
+r2m <- read.delim("fit_dispersal.txt", header = T, sep = "\t", row.names = 1)
+
+r2m <- r2m[,-c(1,3)]
+r2m$tissue <- rownames(r2m)
+r2m.long <- melt(r2m)
+
+df <- r2m.long[!r2m.long$tissue%in%c("skin", "feather", 
+                                   "all", "skin feather", "skin nonfeather" ),]
+df <- df[df$variable%in%c("R2", "m"),]
+df$value <- round(df$value,3)
+
+r2m.p <- ggplot(df, aes(
+  x = factor(tissue,levels = unique(tissue)),   
+  y = ifelse(variable == "m", value, -value),  
+  fill = variable)) +
+  geom_bar(stat = 'identity')+                                
+  coord_flip()+                                               
+  geom_text(                                                  
+    aes(label=value,                                      
+        hjust = ifelse(variable == "m", -0.4, 1.1)           
+    ),
+    size=2                                                   
+    
+  )+
+  scale_y_continuous(                                        
+    labels = abs,                                             
+    expand = expansion(mult = c(0.1, 0.1))) +
+   main_theme+
+  
+  theme(legend.position="right")
+r2m.p 
+
+```
+
+
+## bar plot for 13 body sites
+```{r}
+
+tissue_level <- c("cloaca", "oral",  "creast feather", "neck feather", "dorsal feather", "breast feather","neck skin","dorsal skin", "breast skin", "skin of preen gland","head skin", "break", "leg and foot")
+
+
+bar <- data.frame(cloaca=c(table(t(cloaca.partion) [,1]>0)[2],
+                           table(t(cloaca.partion) [,2]>0)[2],
+                           table(t(cloaca.partion) [,3]>0)[2]),
+                  oral=c(table(t(oral.partion) [,1]>0)[2],
+                         table(t(oral.partion) [,2]>0)[2],
+                         table(t(oral.partion) [,3]>0)[2]),
+                  creast_feather=c(table(t(creast_feather.partion) [,1]>0)[2],
+                            table(t(creast_feather.partion) [,2]>0)[2],
+                            table(t(creast_feather.partion) [,3]>0)[2]),
+                  neck_feather=c(table(t(neck_feather.partion) [,1]>0)[2],
+                                 table(t(neck_feather.partion) [,2]>0)[2],
+                                 table(t(neck_feather.partion) [,3]>0)[2]),
+                  dorsal_feather=c(table(t(dorsal_feather.partion) [,1]>0)[2],
+                                    table(t(dorsal_feather.partion) [,2]>0)[2],
+                                    table(t(dorsal_feather.partion) [,3]>0)[2]),
+                  breast_feather=c(table(t(breast_feather.partion) [,1]>0)[2],
+                                 table(t(breast_feather.partion) [,2]>0)[2],
+                                 table(t(breast_feather.partion) [,3]>0)[2]),
+                  neck_skin=c(table(t(neck_skin.partion) [,1]>0)[2],
+                                 table(t(neck_skin.partion) [,2]>0)[2],
+                                 table(t(neck_skin.partion) [,3]>0)[2]),
+                  dorsal_skin=c(table(t(dorsal_skin.partion) [,1]>0)[2],
+                                 table(t(dorsal_skin.partion) [,2]>0)[2],
+                                 table(t(dorsal_skin.partion) [,3]>0)[2]),
+                  breast_skin=c(table(t(breast_skin.partion) [,1]>0)[2],
+                                 table(t(breast_skin.partion) [,2]>0)[2],
+                                 table(t(breast_skin.partion) [,3]>0)[2]),
+                  preen_skin=c(table(t(preen_skin.partion) [,1]>0)[2],
+                                 table(t(preen_skin.partion) [,2]>0)[2],
+                                 table(t(preen_skin.partion) [,3]>0)[2]),
+                  head_skin=c(table(t(head_skin.partion) [,1]>0)[2],
+                                 table(t(head_skin.partion) [,2]>0)[2],
+                                 table(t(head_skin.partion) [,3]>0)[2]),
+                  break1= c(table(t(break.partion) [,1]>0)[2],
+                                 table(t(break.partion) [,2]>0)[2],
+                                 table(t(break.partion) [,3]>0)[2]),
+                  leg_foot=c(table(t(leg_foot.partion) [,1]>0)[2],
+                                 table(t(leg_foot.partion) [,2]>0)[2],
+                                 table(t(leg_foot.partion) [,3]>0)[2]))
+
+
+
+rownames(bar) <- c("Above", "Below", "Neutral")
+
+per <-  t(t(bar)/colSums(bar,na=T)) * 100 
+
+
+bar.long <- as.data.frame(melt(per, value.name = "value"))
+colnames(bar.long)[1:2] <- c("partion", "habitat")
+
+library(ggsci)
+mycolor<-pal_npg("nrc", alpha = 0.5)(8) 
+cl=c("#E64B357F", "#3C54887F","#91D1C27F")
+# above, below and neutral
+
+
+p <- ggplot(bar.long,aes(x=habitat,y=value, fill=partion))+
+  geom_bar(stat = "identity", position = "stack", alpha=1)+
+  scale_fill_manual(values=cl)+
+  main_theme+
+  theme(axis.text.x = element_text(size=10,angle=45,
+                                   hjust=1, vjust=1), 
+        text=element_text(family="sans", size=12, face="bold"))+
+  labs(x="", y="percentage")+
+  theme(legend.position = "right")
+otu.per <- p
+otu.per  #Figure S5b
+```
+
+
